@@ -1,7 +1,7 @@
 {
   "name": "rawviewer",
-  "displayName": "",
-  "description": "",
+  "displayName": "Raw Image Viewer",
+  "description": "View raw binary image files in VS Code using a .rawimagerc configuration file",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.110.0"
@@ -12,12 +12,40 @@
   "activationEvents": [],
   "main": "./out/extension.js",
   "contributes": {
+    "customEditors": [
+      {
+        "viewType": "rawviewer.rawImageEditor",
+        "displayName": "Raw Image Viewer",
+        "selector": [
+          { "filenamePattern": "*.raw" },
+          { "filenamePattern": "*.bin" },
+          { "filenamePattern": "*.data" },
+          { "filenamePattern": "*.img" },
+          { "filenamePattern": "*.gray" },
+          { "filenamePattern": "*.yuv" }
+        ],
+        "priority": "default"
+      }
+    ],
     "commands": [
       {
-        "command": "rawviewer.helloWorld",
-        "title": "Hello World"
+        "command": "rawviewer.openAsRawImage",
+        "title": "Open as Raw Image"
       }
-    ]
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "rawviewer.openAsRawImage",
+          "group": "navigation"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "rawviewer.openAsRawImage"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
