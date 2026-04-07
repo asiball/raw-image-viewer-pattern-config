@@ -1,71 +1,64 @@
-# rawviewer README
+# Raw Image Viewer
 
-This is the README for your extension "rawviewer". After writing up a brief description, we recommend including the following sections.
+A VS Code extension that displays raw binary image files directly in the editor using a canvas-based renderer.
 
 ## Features
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- Opens raw binary image files (`.raw`, `.bin`, `.data`, `.img`, `.gray`, `.yuv`) as images
+- Configurable via a `.rawimagerc` file (searched from the file's directory up to the filesystem root, similar to `.editorconfig`)
+- Right-click any file in the Explorer → **Open as Raw Image** to view it with this extension
+- Supports multiple pixel formats
 
-For example if there is an image subfolder under your extension project workspace:
+## Configuration: `.rawimagerc`
 
-\!\[feature X\]\(images/feature-x.png\)
+Create a `.rawimagerc` file in the same directory as your binary file, or any parent directory. The nearest file found wins.
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+```json
+{
+  "width": 640,
+  "height": 480,
+  "headerSize": 0,
+  "format": "rgb24"
+}
+```
 
-## Requirements
+| Field        | Type   | Default  | Description                                  |
+|--------------|--------|----------|----------------------------------------------|
+| `width`      | number | required | Image width in pixels                        |
+| `height`     | number | required | Image height in pixels                       |
+| `headerSize` | number | `0`      | Number of bytes to skip at the start of file |
+| `format`     | string | `"rgb24"`| Pixel format (see table below)               |
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+### Supported Pixel Formats
 
-## Extension Settings
+| Format     | Description                      | Bytes/pixel |
+|------------|----------------------------------|-------------|
+| `gray8`    | 8-bit grayscale                  | 1           |
+| `gray16le` | 16-bit grayscale (little-endian) | 2           |
+| `gray16be` | 16-bit grayscale (big-endian)    | 2           |
+| `rgb24`    | 24-bit RGB                       | 3           |
+| `bgr24`    | 24-bit BGR                       | 3           |
+| `rgba32`   | 32-bit RGBA                      | 4           |
+| `bgra32`   | 32-bit BGRA                      | 4           |
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
+## Usage
 
-For example:
+1. Place a `.rawimagerc` file in the directory containing your binary image (or a parent directory).
+2. Open a `.raw`, `.bin`, `.data`, `.img`, `.gray`, or `.yuv` file in VS Code — it will automatically render as an image.
+3. For other file extensions, right-click the file in the Explorer and choose **Open as Raw Image**.
 
-This extension contributes the following settings:
+## Example
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+Suppose you have a 320×240 8-bit grayscale image at `/project/images/frame.raw` with no header. Create `/project/images/.rawimagerc`:
 
-## Known Issues
+```json
+{
+  "width": 320,
+  "height": 240,
+  "headerSize": 0,
+  "format": "gray8"
+}
+```
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+Open `frame.raw` in VS Code and the image will be displayed on a canvas.
 
-## Release Notes
-
-Users appreciate release notes as you update your extension.
-
-### 1.0.0
-
-Initial release of ...
-
-### 1.0.1
-
-Fixed issue #.
-
-### 1.1.0
-
-Added features X, Y, and Z.
-
----
-
-## Following extension guidelines
-
-Ensure that you've read through the extensions guidelines and follow the best practices for creating your extension.
-
-* [Extension Guidelines](https://code.visualstudio.com/api/references/extension-guidelines)
-
-## Working with Markdown
-
-You can author your README using Visual Studio Code. Here are some useful editor keyboard shortcuts:
-
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux).
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux).
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets.
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
