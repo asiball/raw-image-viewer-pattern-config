@@ -39,24 +39,21 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
         webviewPanel: vscode.WebviewPanel,
         _token: vscode.CancellationToken
     ): Promise<void> {
-        webviewPanel.webview.options = { enableScripts: true };
+        webviewPanel.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [vscode.Uri.file(path.dirname(document.uri.fsPath))],
+        };
 
-        const nonce = getNonce();
-        webviewPanel.webview.html = getWebviewHtml(nonce);
-
-        const listener = webviewPanel.webview.onDidReceiveMessage(async (message) => {
-            if (message.type !== 'ready') {
-                return;
-            }
+        const sendRenderPayload = (): void => {
             try {
                 const config = findConfig(document.uri.fsPath);
-                const fileBuffer = fs.readFileSync(document.uri.fsPath);
-                const base64Data = fileBuffer.toString('base64');
+                const fileStat = fs.statSync(document.uri.fsPath);
+                const fileUri = webviewPanel.webview.asWebviewUri(document.uri).toString();
                 webviewPanel.webview.postMessage({
                     type: 'render',
                     config,
-                    data: base64Data,
-                    fileSize: fileBuffer.length,
+                    fileUri,
+                    fileSize: fileStat.size,
                 });
             } catch (err: unknown) {
                 webviewPanel.webview.postMessage({
@@ -64,9 +61,35 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
                     message: String(err),
                 });
             }
+        };
+
+        // Send once even if ready handshake fails, to prevent permanent loading.
+        const initialSendTimer = setTimeout(() => {
+            sendRenderPayload();
+        }, 300);
+
+        const readyWarningTimer = setTimeout(() => {
+            void vscode.window.showWarningMessage(
+                'Raw Image Viewer: webview did not send a ready message. Open "Developer: Open Webview Developer Tools" and check console errors.'
+            );
+        }, 5000);
+
+        const listener = webviewPanel.webview.onDidReceiveMessage(async (message) => {
+            if (message.type !== 'ready') {
+                return;
+            }
+            clearTimeout(readyWarningTimer);
+            sendRenderPayload();
         });
 
-        webviewPanel.onDidDispose(() => listener.dispose());
+        const nonce = getNonce();
+        webviewPanel.webview.html = getWebviewHtml(nonce, webviewPanel.webview.cspSource);
+
+        webviewPanel.onDidDispose(() => {
+            clearTimeout(initialSendTimer);
+            clearTimeout(readyWarningTimer);
+            listener.dispose();
+        });
     }
 }
 
@@ -101,12 +124,12 @@ function getNonce(): string {
     return text;
 }
 
-function getWebviewHtml(nonce: string): string {
+function getWebviewHtml(nonce: string, cspSource: string): string {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline';">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src ${cspSource};">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Raw Image Viewer</title>
     <style>
@@ -195,6 +218,28 @@ function getWebviewHtml(nonce: string): string {
     </div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
+        var readyTimer = null;
+        var startupTimeout = null;
+
+        function clearReadyTimer() {
+            if (readyTimer) {
+                clearInterval(readyTimer);
+                readyTimer = null;
+            }
+            if (startupTimeout) {
+                clearTimeout(startupTimeout);
+                startupTimeout = null;
+            }
+        }
+
+        function showRuntimeError(err) {
+            var root = document.getElementById('root');
+            if (!root) {
+                return;
+            }
+            root.className = 'center';
+            root.innerHTML = '<div class="error-box"><strong>Webview Error:</strong> ' + escapeHtml(String(err)) + '</div>';
+        }
 
         function escapeHtml(str) {
             return String(str)
@@ -209,14 +254,16 @@ function getWebviewHtml(nonce: string): string {
             var root = document.getElementById('root');
 
             if (msg.type === 'error') {
+                clearReadyTimer();
                 root.className = 'center';
                 root.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + escapeHtml(msg.message) + '</div>';
                 return;
             }
 
             if (msg.type === 'render') {
+                clearReadyTimer();
                 var config = msg.config;
-                var base64Data = msg.data;
+                var fileUri = msg.fileUri;
                 var fileSize = msg.fileSize;
 
                 if (!config) {
@@ -224,8 +271,8 @@ function getWebviewHtml(nonce: string): string {
                     root.innerHTML =
                         '<div class="no-config-box">' +
                         '<h3>\u2699 No .rawimagerc configuration found</h3>' +
-                        '<p>Create a <code>.rawimagerc</code> file in the file\'s directory or any parent directory to configure how to render this binary file as an image.</p>' +
-                        '<pre>{\n  "width": 640,\n  "height": 480,\n  "headerSize": 0,\n  "format": "rgb24"\n}</pre>' +
+                        '<p>Create a <code>.rawimagerc</code> file in the same directory as the file, or any parent directory, to configure how to render this binary file as an image.</p>' +
+                        '<pre>{\\n  "width": 640,\\n  "height": 480,\\n  "headerSize": 0,\\n  "format": "rgb24"\\n}</pre>' +
                         '<p>Supported formats:</p>' +
                         '<table>' +
                         '<tr><th>Format</th><th>Description</th><th>Bytes/pixel</th></tr>' +
@@ -246,92 +293,132 @@ function getWebviewHtml(nonce: string): string {
                 var headerSize = config.headerSize || 0;
                 var format = config.format || 'rgb24';
 
-                // Decode base64 to byte array
-                var binaryStr = atob(base64Data);
-                var rawBytes = new Uint8Array(binaryStr.length);
-                for (var i = 0; i < binaryStr.length; i++) {
-                    rawBytes[i] = binaryStr.charCodeAt(i);
+                if (!fileUri) {
+                    root.className = 'center';
+                    root.innerHTML = '<div class="error-box"><strong>Error:</strong> Missing file URI for webview fetch.</div>';
+                    return;
                 }
 
-                var pixelData = rawBytes.subarray(headerSize);
-
-                var canvas = document.createElement('canvas');
-                canvas.width = width;
-                canvas.height = height;
-
-                var ctx = canvas.getContext('2d');
-                var imageData = ctx.createImageData(width, height);
-                var pixels = imageData.data;
-
-                var srcIdx = 0;
-                var dstIdx = 0;
-                var totalPixels = width * height;
-
-                for (var p = 0; p < totalPixels && srcIdx < pixelData.length; p++) {
-                    var r = 0, g = 0, b = 0, a = 255;
-                    switch (format) {
-                        case 'gray8':
-                            r = g = b = pixelData[srcIdx++];
-                            break;
-                        case 'gray16le': {
-                            var lowByte = pixelData[srcIdx++] || 0;
-                            var highByte = pixelData[srcIdx++] || 0;
-                            r = g = b = ((highByte << 8) | lowByte) >> 8;
-                            break;
+                fetch(fileUri)
+                    .then(function(response) {
+                        if (!response.ok) {
+                            throw new Error('Failed to read file in webview: HTTP ' + response.status);
                         }
-                        case 'gray16be': {
-                            var highByte2 = pixelData[srcIdx++] || 0;
-                            var lowByte2 = pixelData[srcIdx++] || 0;
-                            r = g = b = ((highByte2 << 8) | lowByte2) >> 8;
-                            break;
+                        return response.arrayBuffer();
+                    })
+                    .then(function(buffer) {
+                        var rawBytes = new Uint8Array(buffer);
+                        var pixelData = rawBytes.subarray(headerSize);
+
+                        var canvas = document.createElement('canvas');
+                        canvas.width = width;
+                        canvas.height = height;
+
+                        var ctx = canvas.getContext('2d');
+                        if (!ctx) {
+                            throw new Error('2D canvas context is not available.');
                         }
-                        case 'rgb24':
-                            r = pixelData[srcIdx++] || 0;
-                            g = pixelData[srcIdx++] || 0;
-                            b = pixelData[srcIdx++] || 0;
-                            break;
-                        case 'bgr24':
-                            b = pixelData[srcIdx++] || 0;
-                            g = pixelData[srcIdx++] || 0;
-                            r = pixelData[srcIdx++] || 0;
-                            break;
-                        case 'rgba32':
-                            r = pixelData[srcIdx++] || 0;
-                            g = pixelData[srcIdx++] || 0;
-                            b = pixelData[srcIdx++] || 0;
-                            a = pixelData[srcIdx++] || 0;
-                            break;
-                        case 'bgra32':
-                            b = pixelData[srcIdx++] || 0;
-                            g = pixelData[srcIdx++] || 0;
-                            r = pixelData[srcIdx++] || 0;
-                            a = pixelData[srcIdx++] || 0;
-                            break;
-                        default:
-                            r = g = b = 0;
-                            break;
-                    }
-                    pixels[dstIdx++] = r;
-                    pixels[dstIdx++] = g;
-                    pixels[dstIdx++] = b;
-                    pixels[dstIdx++] = a;
-                }
+                        var imageData = ctx.createImageData(width, height);
+                        var pixels = imageData.data;
 
-                ctx.putImageData(imageData, 0, 0);
+                        var srcIdx = 0;
+                        var dstIdx = 0;
+                        var totalPixels = width * height;
 
-                root.className = 'viewer';
-                root.innerHTML = '';
+                        for (var p = 0; p < totalPixels && srcIdx < pixelData.length; p++) {
+                            var r = 0, g = 0, b = 0, a = 255;
+                            switch (format) {
+                                case 'gray8':
+                                    r = g = b = pixelData[srcIdx++] || 0;
+                                    break;
+                                case 'gray16le': {
+                                    var lowByte = pixelData[srcIdx++] || 0;
+                                    var highByte = pixelData[srcIdx++] || 0;
+                                    r = g = b = ((highByte << 8) | lowByte) >> 8;
+                                    break;
+                                }
+                                case 'gray16be': {
+                                    var highByte2 = pixelData[srcIdx++] || 0;
+                                    var lowByte2 = pixelData[srcIdx++] || 0;
+                                    r = g = b = ((highByte2 << 8) | lowByte2) >> 8;
+                                    break;
+                                }
+                                case 'rgb24':
+                                    r = pixelData[srcIdx++] || 0;
+                                    g = pixelData[srcIdx++] || 0;
+                                    b = pixelData[srcIdx++] || 0;
+                                    break;
+                                case 'bgr24':
+                                    b = pixelData[srcIdx++] || 0;
+                                    g = pixelData[srcIdx++] || 0;
+                                    r = pixelData[srcIdx++] || 0;
+                                    break;
+                                case 'rgba32':
+                                    r = pixelData[srcIdx++] || 0;
+                                    g = pixelData[srcIdx++] || 0;
+                                    b = pixelData[srcIdx++] || 0;
+                                    a = pixelData[srcIdx++] || 0;
+                                    break;
+                                case 'bgra32':
+                                    b = pixelData[srcIdx++] || 0;
+                                    g = pixelData[srcIdx++] || 0;
+                                    r = pixelData[srcIdx++] || 0;
+                                    a = pixelData[srcIdx++] || 0;
+                                    break;
+                                default:
+                                    r = g = b = 0;
+                                    break;
+                            }
+                            pixels[dstIdx++] = r;
+                            pixels[dstIdx++] = g;
+                            pixels[dstIdx++] = b;
+                            pixels[dstIdx++] = a;
+                        }
 
-                var infoBar = document.createElement('div');
-                infoBar.className = 'info-bar';
-                infoBar.textContent = width + ' \xd7 ' + height + ' | ' + format + ' | header: ' + headerSize + ' B | file: ' + fileSize + ' B';
+                        ctx.putImageData(imageData, 0, 0);
 
-                root.appendChild(infoBar);
-                root.appendChild(canvas);
+                        root.className = 'viewer';
+                        root.innerHTML = '';
+
+                        var infoBar = document.createElement('div');
+                        infoBar.className = 'info-bar';
+                        infoBar.textContent = width + ' \xd7 ' + height + ' | ' + format + ' | header: ' + headerSize + ' B | file: ' + fileSize + ' B';
+
+                        root.appendChild(infoBar);
+                        root.appendChild(canvas);
+                    })
+                    .catch(function(err) {
+                        root.className = 'center';
+                        root.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + escapeHtml(String(err)) + '</div>';
+                    });
             }
         });
 
+        window.addEventListener('error', function(event) {
+            clearReadyTimer();
+            showRuntimeError(event.error || event.message || 'Unknown script error');
+        });
+
+        window.addEventListener('unhandledrejection', function(event) {
+            clearReadyTimer();
+            showRuntimeError(event.reason || 'Unhandled promise rejection');
+        });
+
+        // Retry ready handshake in case startup timing drops the first message.
+        readyTimer = setInterval(function() {
+            vscode.postMessage({ type: 'ready' });
+        }, 250);
         vscode.postMessage({ type: 'ready' });
+
+        // Surface a visible diagnostic instead of infinite loading.
+        startupTimeout = setTimeout(function() {
+            var root = document.getElementById('root');
+            if (!root) {
+                return;
+            }
+            root.className = 'center';
+            root.innerHTML = '<div class="error-box"><strong>Error:</strong> Extension host did not respond in time. Reload the extension host and reopen the file.</div>';
+        }, 4000);
     </script>
 </body>
 </html>`;
