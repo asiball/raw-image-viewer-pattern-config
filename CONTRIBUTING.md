@@ -111,6 +111,13 @@ PRを作成する際は `.github/PULL_REQUEST_TEMPLATE.md` のチェックリス
 `.github/workflows/copilot-setup-steps.yml` を編集することで、
 Copilot エージェントの実行環境をカスタマイズできます（Node.js バージョン、依存パッケージのキャッシュ等）。
 
+このファイルは `ci.yml` の代替ではありません。`ci.yml` は PR や push 時の検証用、
+`copilot-setup-steps.yml` は Copilot エージェントの作業セッション内で
+`npm run lint` や `npm run compile` を実行できる状態を作るための専用設定です。
+
+また、ジョブ名 `copilot-setup-steps` は Copilot が認識する予約名のため、
+AI エージェントによる開発フローを維持する限り削除・改名しないでください。
+
 ---
 
 ## CI
