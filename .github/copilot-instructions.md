@@ -43,3 +43,5 @@ Branch prefixes: `feature/`, `fix/`, `copilot/`, `docs/`, `refactor/`
 PR title prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`
 
 Direct pushes to `main` are not allowed. CI runs `npm run lint` and `npm run compile` on all PRs and pushes.
+
+**After pushing a branch, always open a Pull Request targeting `main`.** Include a clear description of what was changed and why. Follow the PR template checklist in `.github/PULL_REQUEST_TEMPLATE.md`.
