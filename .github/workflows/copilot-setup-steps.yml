@@ -1,7 +1,29 @@
 name: "Copilot Setup Steps"
 
-# Automatically run the setup steps when they are changed to allow for easy validation,
-# and allow manual testing through the repository's "Actions" tab.
+# このワークフローは GitHub Copilot のクラウドエージェントが作業を開始する前に
+# 開発環境をセットアップするための特別なファイルです。
+#
+# 【このファイルの目的】
+# GitHub Copilot のコーディングエージェントは、タスクを処理するために
+# 一時的な GitHub Actions 環境で動作します。このファイルに定義されたステップは、
+# Copilot がコードを探索・変更・テストする前に実行され、必要なツールや
+# 依存関係を事前にインストールします。
+#
+# 【このプロジェクトでのセットアップ内容】
+# このリポジトリは TypeScript で書かれた VS Code 拡張機能です。
+# Copilot が以下の作業を行えるよう、以下をセットアップしています：
+#   - Node.js / npm のインストール
+#   - npm パッケージ依存関係のインストール (npm ci)
+#   - TypeScript コンパイル (npm run compile)
+#
+# 【自動検証】
+# このファイル自体の変更時にも自動実行されるため、
+# セットアップ手順が正しく動作するかを Pull Request 上で確認できます。
+# また、リポジトリの "Actions" タブから手動実行することも可能です。
+
+# このワークフローは以下のタイミングで自動実行されます:
+# - このファイル自体が変更されたとき (push / pull_request)
+# - GitHub Actions の「Actions」タブから手動で実行したとき
 on:
   workflow_dispatch:
   push:
@@ -12,22 +34,39 @@ on:
       - .github/workflows/copilot-setup-steps.yml
 
 jobs:
-  # The job MUST be called `copilot-setup-steps` or it will not be picked up by Copilot.
+  # このジョブ名は必ず `copilot-setup-steps` にしてください。
+  # この名前でなければ Copilot に認識されません。
   copilot-setup-steps:
     runs-on: ubuntu-latest
 
+    # 最小限の権限のみ付与します。
+    # Copilot 自身の操作には別途トークンが与えられます。
     permissions:
-      contents: read
+      contents: read # actions/checkout でリポジトリをクローンするために必要
 
     steps:
+      # リポジトリをチェックアウトして依存関係をインストールします。
+      # Copilot はこのステップの後にも自動でチェックアウトを行いますが、
+      # 依存関係のキャッシュを活用するためにここで明示的に行います。
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Node.js 20 をセットアップし、npm のキャッシュを有効化します。
+      # これにより 2 回目以降の実行で依存関係のインストールが高速になります。
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
 
+      # npm ci で依存関係を確定的にインストールします。
+      # package-lock.json に基づいてインストールするため、
+      # 再現性の高い環境を構築できます。
       - name: Install dependencies
         run: npm ci
+
+      # TypeScript をコンパイルして out/ ディレクトリを生成します。
+      # Copilot がコード変更後にコンパイルエラーを即座に検出できるよう、
+      # 事前にコンパイル済みの状態を用意しておきます。
+      - name: Compile TypeScript
+        run: npm run compile
