@@ -1,27 +1,27 @@
 ---
-name: ✨ 機能リクエスト / Feature Request
-about: 新機能を提案する / Propose a new feature
+name: ✨ 機能リクエスト
+about: 新機能を提案する
 title: "[FEATURE] "
 labels: enhancement
 assignees: ""
 ---
 
-## 機能の概要 / Feature Summary
+## 機能の概要
 
-<!-- 追加したい機能を説明してください / Describe the feature you want to add -->
+<!-- 追加したい機能を説明してください -->
 
-## 動機・背景 / Motivation and Background
+## 動機・背景
 
-<!-- なぜこの機能が必要か / Why is this feature needed -->
+<!-- なぜこの機能が必要か -->
 
-## 提案する解決策 / Proposed Solution
+## 提案する解決策
 
-<!-- どのように実装するか / How it could be implemented -->
+<!-- どのように実装するか -->
 
-## 代替案 / Alternatives Considered
+## 代替案
 
-<!-- 他に検討した方法があれば / Any alternative approaches considered -->
+<!-- 他に検討した方法があれば -->
 
-## 追加情報 / Additional Context
+## 追加情報
 
-<!-- その他の関連情報、スクリーンショット等 / Any other relevant information, screenshots, etc. -->
+<!-- その他の関連情報、スクリーンショット等 -->

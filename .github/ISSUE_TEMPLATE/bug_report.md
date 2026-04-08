@@ -1,39 +1,39 @@
 ---
-name: 🐛 バグ報告 / Bug Report
-about: 不具合を報告する / Report a bug
+name: 🐛 バグ報告
+about: 不具合を報告する
 title: "[BUG] "
 labels: bug
 assignees: ""
 ---
 
-## バグの説明 / Bug Description
+## バグの説明
 
-<!-- 発生している問題を明確に説明してください / Clearly describe the problem -->
+<!-- 発生している問題を明確に説明してください -->
 
-## 再現手順 / Steps to Reproduce
+## 再現手順
 
 1.
 2.
 3.
 
-## 期待する動作 / Expected Behavior
+## 期待する動作
 
-<!-- 正しく動作した場合に何が起こるべきか / What should happen when working correctly -->
+<!-- 正しく動作した場合に何が起こるべきか -->
 
-## 実際の動作 / Actual Behavior
+## 実際の動作
 
-<!-- 実際に何が起こっているか / What actually happens -->
+<!-- 実際に何が起こっているか -->
 
-## 環境 / Environment
+## 環境
 
 - OS:
 - VS Code version:
 - Extension version:
 
-## スクリーンショット / Screenshots
+## スクリーンショット
 
-<!-- 該当する場合は添付してください / Attach if applicable -->
+<!-- 該当する場合は添付してください -->
 
-## 追加情報 / Additional Context
+## 追加情報
 
-<!-- その他の関連情報があれば記載してください / Any other relevant information -->
+<!-- その他の関連情報があれば記載してください -->

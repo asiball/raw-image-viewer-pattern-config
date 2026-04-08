@@ -1,31 +1,31 @@
 ---
-name: 🤖 AIタスク依頼 / AI Task Request
-about: GitHub Copilot エージェントに作業を依頼する / Request work from GitHub Copilot agent
+name: 🤖 AIタスク依頼
+about: GitHub Copilot エージェントに作業を依頼する
 title: "[AI] "
 labels: ai-task
 assignees: ""
 ---
 
-## タスクの概要 / Task Summary
+## タスクの概要
 
-<!-- AIエージェントに何をしてほしいか明確に説明してください / Clearly describe what you want the AI agent to do -->
+<!-- AIエージェントに何をしてほしいか明確に説明してください -->
 
-## 受け入れ条件 / Acceptance Criteria
+## 受け入れ条件
 
-<!-- このタスクが完了したとみなす条件をリストアップしてください / List the conditions for this task to be considered complete -->
+<!-- このタスクが完了したとみなす条件をリストアップしてください -->
 
 - [ ]
 - [ ]
 - [ ]
 
-## 背景・コンテキスト / Background and Context
+## 背景・コンテキスト
 
-<!-- 実装に必要な追加情報や制約条件 / Additional information or constraints needed for implementation -->
+<!-- 実装に必要な追加情報や制約条件 -->
 
-## 関連ファイル / Related Files
+## 関連ファイル
 
-<!-- 変更が必要なファイルや参照すべきファイル / Files that need to be changed or referenced -->
+<!-- 変更が必要なファイルや参照すべきファイル -->
 
-## 参考情報 / References
+## 参考情報
 
-<!-- 関連するIssue、PR、ドキュメントへのリンク / Links to related issues, PRs, or documentation -->
+<!-- 関連するIssue、PR、ドキュメントへのリンク -->
