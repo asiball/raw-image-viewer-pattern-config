@@ -36,3 +36,13 @@ jobs:
 
       - name: Compile
         run: npm run compile
+
+      - name: Package Extension
+        run: npx @vscode/vsce package --no-git-tag-version --allow-missing-repository
+
+      - name: Upload VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-rawimage-viewer-vsix
+          path: "*.vsix"
+          if-no-files-found: error
