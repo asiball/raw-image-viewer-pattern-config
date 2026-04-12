@@ -5,8 +5,11 @@ import * as path from 'path';
 // as well as import your extension to test it
 import * as vscode from 'vscode';
 import {
+	appendRawImageChunk,
+	createRawImageDecodeState,
 	decodePngDataUrl,
 	getConfigSearchDirectories,
+	getBytesPerPixel,
 	getLocalResourceRoots,
 	getSuggestedPngSaveUri,
 	inferRawImageConfigFromFilename,
@@ -147,5 +150,50 @@ suite('Extension Test Suite', () => {
 
 	test('decodePngDataUrl rejects invalid payloads', () => {
 		assert.throws(() => decodePngDataUrl('not-a-data-url'), /Invalid PNG data/);
+	});
+
+	test('getBytesPerPixel matches supported formats', () => {
+		assert.strictEqual(getBytesPerPixel('gray8'), 1);
+		assert.strictEqual(getBytesPerPixel('gray16le'), 2);
+		assert.strictEqual(getBytesPerPixel('gray16be'), 2);
+		assert.strictEqual(getBytesPerPixel('rgb24'), 3);
+		assert.strictEqual(getBytesPerPixel('bgr24'), 3);
+		assert.strictEqual(getBytesPerPixel('rgba32'), 4);
+		assert.strictEqual(getBytesPerPixel('bgra32'), 4);
+	});
+
+	test('appendRawImageChunk skips headers and decodes pixels across chunk boundaries', () => {
+		const pixels = new Uint8ClampedArray(8);
+		const state = createRawImageDecodeState(2, 1, 2, 'rgb24');
+
+		appendRawImageChunk(state, Uint8Array.from([9, 8, 255]), pixels);
+		assert.strictEqual(state.pixelsWritten, 0);
+
+		appendRawImageChunk(state, Uint8Array.from([0, 0, 0, 255, 0]), pixels);
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.deepStrictEqual(Array.from(pixels), [255, 0, 0, 255, 0, 255, 0, 255]);
+	});
+
+	test('appendRawImageChunk decodes gray16 values with split samples', () => {
+		const pixels = new Uint8ClampedArray(8);
+		const state = createRawImageDecodeState(2, 1, 0, 'gray16le');
+
+		appendRawImageChunk(state, Uint8Array.from([0x34]), pixels);
+		assert.strictEqual(state.pixelsWritten, 0);
+
+		appendRawImageChunk(state, Uint8Array.from([0x12, 0xcd, 0xab]), pixels);
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.deepStrictEqual(Array.from(pixels), [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 255]);
+	});
+
+	test('appendRawImageChunk ignores trailing bytes after expected pixels are filled', () => {
+		const pixels = new Uint8ClampedArray(4);
+		const state = createRawImageDecodeState(1, 1, 0, 'rgba32');
+
+		appendRawImageChunk(state, Uint8Array.from([1, 2, 3, 4, 200, 201, 202, 203]), pixels);
+
+		assert.strictEqual(state.pixelsWritten, 1);
+		assert.deepStrictEqual(Array.from(pixels), [1, 2, 3, 4]);
+		assert.strictEqual(state.pendingLength, 0);
 	});
 });
