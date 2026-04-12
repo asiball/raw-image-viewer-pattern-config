@@ -65,6 +65,14 @@ For `yuv420p` and `nv12`, use even image widths and heights. `yuyv422` requires 
 3. For other file extensions, right-click the file in the Explorer and choose **Open as Raw Image**.
 4. Click **Export PNG** above the canvas to save the current rendering as a `.png` file.
 
+## Build a `.vsix` with GitHub Actions
+
+This repository includes a GitHub Actions workflow that packages the extension into a `.vsix` file and uploads it as a build artifact. It does not publish anything to the Visual Studio Marketplace.
+
+1. Push your branch to GitHub, or run the **Build VSIX** workflow manually from the **Actions** tab.
+2. Download the `rawviewer-vsix` artifact from the workflow run.
+3. On the other computer, install it in VS Code with **Extensions: Install from VSIX...**.
+
 ## Fallback Settings
 
 Add these workspace settings if you want a project-wide fallback when `.rawimagerc` is absent:
