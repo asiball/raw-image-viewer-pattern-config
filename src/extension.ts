@@ -10,6 +10,9 @@ const supportedFormats = [
     'bgr24',
     'rgba32',
     'bgra32',
+    'yuv420p',
+    'nv12',
+    'yuyv422',
 ] as const;
 
 type RawImageFormat = (typeof supportedFormats)[number];
@@ -453,6 +456,155 @@ export function decodePngDataUrl(dataUrl: unknown): Uint8Array {
     return Uint8Array.from(Buffer.from(match[1], 'base64'));
 }
 
+export function decodeRawImageToRgba(
+    pixelData: Uint8Array,
+    width: number,
+    height: number,
+    format: RawImageFormat
+): Uint8ClampedArray {
+    const totalPixels = width * height;
+    const pixels = new Uint8ClampedArray(totalPixels * 4);
+
+    const clampToByte = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
+    const writePixel = (pixelIndex: number, r: number, g: number, b: number, a = 255): void => {
+        const offset = pixelIndex * 4;
+        pixels[offset] = clampToByte(r);
+        pixels[offset + 1] = clampToByte(g);
+        pixels[offset + 2] = clampToByte(b);
+        pixels[offset + 3] = clampToByte(a);
+    };
+    const writeYuvPixel = (pixelIndex: number, y: number, u: number, v: number): void => {
+        const c = Math.max(0, y - 16);
+        const d = u - 128;
+        const e = v - 128;
+        writePixel(
+            pixelIndex,
+            (298 * c + 409 * e + 128) >> 8,
+            (298 * c - 100 * d - 208 * e + 128) >> 8,
+            (298 * c + 516 * d + 128) >> 8
+        );
+    };
+    const requireBytes = (requiredLength: number): void => {
+        if (pixelData.length < requiredLength) {
+            throw new Error(
+                `Expected at least ${requiredLength} bytes for ${width}x${height} ${format}, but found ${pixelData.length}.`
+            );
+        }
+    };
+
+    switch (format) {
+        case 'gray8': {
+            requireBytes(totalPixels);
+            for (let p = 0; p < totalPixels; p++) {
+                const value = pixelData[p];
+                writePixel(p, value, value, value);
+            }
+            return pixels;
+        }
+        case 'gray16le': {
+            requireBytes(totalPixels * 2);
+            for (let p = 0; p < totalPixels; p++) {
+                const srcIdx = p * 2;
+                const value = ((pixelData[srcIdx + 1] << 8) | pixelData[srcIdx]) >> 8;
+                writePixel(p, value, value, value);
+            }
+            return pixels;
+        }
+        case 'gray16be': {
+            requireBytes(totalPixels * 2);
+            for (let p = 0; p < totalPixels; p++) {
+                const srcIdx = p * 2;
+                const value = ((pixelData[srcIdx] << 8) | pixelData[srcIdx + 1]) >> 8;
+                writePixel(p, value, value, value);
+            }
+            return pixels;
+        }
+        case 'rgb24': {
+            requireBytes(totalPixels * 3);
+            for (let p = 0; p < totalPixels; p++) {
+                const srcIdx = p * 3;
+                writePixel(p, pixelData[srcIdx], pixelData[srcIdx + 1], pixelData[srcIdx + 2]);
+            }
+            return pixels;
+        }
+        case 'bgr24': {
+            requireBytes(totalPixels * 3);
+            for (let p = 0; p < totalPixels; p++) {
+                const srcIdx = p * 3;
+                writePixel(p, pixelData[srcIdx + 2], pixelData[srcIdx + 1], pixelData[srcIdx]);
+            }
+            return pixels;
+        }
+        case 'rgba32': {
+            requireBytes(totalPixels * 4);
+            for (let p = 0; p < totalPixels; p++) {
+                const srcIdx = p * 4;
+                writePixel(p, pixelData[srcIdx], pixelData[srcIdx + 1], pixelData[srcIdx + 2], pixelData[srcIdx + 3]);
+            }
+            return pixels;
+        }
+        case 'bgra32': {
+            requireBytes(totalPixels * 4);
+            for (let p = 0; p < totalPixels; p++) {
+                const srcIdx = p * 4;
+                writePixel(p, pixelData[srcIdx + 2], pixelData[srcIdx + 1], pixelData[srcIdx], pixelData[srcIdx + 3]);
+            }
+            return pixels;
+        }
+        case 'yuv420p': {
+            if (width % 2 !== 0 || height % 2 !== 0) {
+                throw new Error(`Format ${format} requires even width and height.`);
+            }
+            const lumaPlaneSize = totalPixels;
+            const chromaPlaneSize = totalPixels / 4;
+            requireBytes(lumaPlaneSize + chromaPlaneSize * 2);
+            const uOffset = lumaPlaneSize;
+            const vOffset = uOffset + chromaPlaneSize;
+            const chromaWidth = width / 2;
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const pixelIndex = y * width + x;
+                    const chromaIndex = Math.floor(y / 2) * chromaWidth + Math.floor(x / 2);
+                    writeYuvPixel(pixelIndex, pixelData[pixelIndex], pixelData[uOffset + chromaIndex], pixelData[vOffset + chromaIndex]);
+                }
+            }
+            return pixels;
+        }
+        case 'nv12': {
+            if (width % 2 !== 0 || height % 2 !== 0) {
+                throw new Error(`Format ${format} requires even width and height.`);
+            }
+            const lumaPlaneSize = totalPixels;
+            requireBytes(lumaPlaneSize + totalPixels / 2);
+            const uvOffset = lumaPlaneSize;
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const pixelIndex = y * width + x;
+                    const chromaIndex = uvOffset + Math.floor(y / 2) * width + Math.floor(x / 2) * 2;
+                    writeYuvPixel(pixelIndex, pixelData[pixelIndex], pixelData[chromaIndex], pixelData[chromaIndex + 1]);
+                }
+            }
+            return pixels;
+        }
+        case 'yuyv422': {
+            if (width % 2 !== 0) {
+                throw new Error(`Format ${format} requires an even width.`);
+            }
+            requireBytes(totalPixels * 2);
+            for (let p = 0; p < totalPixels; p += 2) {
+                const srcIdx = p * 2;
+                const y0 = pixelData[srcIdx];
+                const u = pixelData[srcIdx + 1];
+                const y1 = pixelData[srcIdx + 2];
+                const v = pixelData[srcIdx + 3];
+                writeYuvPixel(p, y0, u, v);
+                writeYuvPixel(p + 1, y1, u, v);
+            }
+            return pixels;
+        }
+    }
+}
+
 function getNonce(): string {
     let text = '';
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -577,6 +729,7 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
     </div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
+        const decodeRawImageToRgba = ${decodeRawImageToRgba.toString()};
         var readyTimer = null;
         var startupTimeout = null;
 
@@ -644,6 +797,9 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         '<tr><td><code>bgr24</code></td><td>24-bit BGR</td><td>3</td></tr>' +
                         '<tr><td><code>rgba32</code></td><td>32-bit RGBA</td><td>4</td></tr>' +
                         '<tr><td><code>bgra32</code></td><td>32-bit BGRA</td><td>4</td></tr>' +
+                        '<tr><td><code>yuv420p</code></td><td>Planar YUV 4:2:0</td><td>1.5</td></tr>' +
+                        '<tr><td><code>nv12</code></td><td>Semi-planar YUV 4:2:0</td><td>1.5</td></tr>' +
+                        '<tr><td><code>yuyv422</code></td><td>Packed YUV 4:2:2</td><td>2</td></tr>' +
                         '</table>' +
                         '</div>';
                     return;
@@ -680,62 +836,7 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             throw new Error('2D canvas context is not available.');
                         }
                         var imageData = ctx.createImageData(width, height);
-                        var pixels = imageData.data;
-
-                        var srcIdx = 0;
-                        var dstIdx = 0;
-                        var totalPixels = width * height;
-
-                        for (var p = 0; p < totalPixels && srcIdx < pixelData.length; p++) {
-                            var r = 0, g = 0, b = 0, a = 255;
-                            switch (format) {
-                                case 'gray8':
-                                    r = g = b = pixelData[srcIdx++] || 0;
-                                    break;
-                                case 'gray16le': {
-                                    const lowByte = pixelData[srcIdx++] || 0;
-                                    const highByte = pixelData[srcIdx++] || 0;
-                                    r = g = b = ((highByte << 8) | lowByte) >> 8;
-                                    break;
-                                }
-                                case 'gray16be': {
-                                    const highByte = pixelData[srcIdx++] || 0;
-                                    const lowByte = pixelData[srcIdx++] || 0;
-                                    r = g = b = ((highByte << 8) | lowByte) >> 8;
-                                    break;
-                                }
-                                case 'rgb24':
-                                    r = pixelData[srcIdx++] || 0;
-                                    g = pixelData[srcIdx++] || 0;
-                                    b = pixelData[srcIdx++] || 0;
-                                    break;
-                                case 'bgr24':
-                                    b = pixelData[srcIdx++] || 0;
-                                    g = pixelData[srcIdx++] || 0;
-                                    r = pixelData[srcIdx++] || 0;
-                                    break;
-                                case 'rgba32':
-                                    r = pixelData[srcIdx++] || 0;
-                                    g = pixelData[srcIdx++] || 0;
-                                    b = pixelData[srcIdx++] || 0;
-                                    a = pixelData[srcIdx++] || 0;
-                                    break;
-                                case 'bgra32':
-                                    b = pixelData[srcIdx++] || 0;
-                                    g = pixelData[srcIdx++] || 0;
-                                    r = pixelData[srcIdx++] || 0;
-                                    a = pixelData[srcIdx++] || 0;
-                                    break;
-                                default:
-                                    r = g = b = 0;
-                                    break;
-                            }
-                            pixels[dstIdx++] = r;
-                            pixels[dstIdx++] = g;
-                            pixels[dstIdx++] = b;
-                            pixels[dstIdx++] = a;
-                        }
-
+                        imageData.data.set(decodeRawImageToRgba(pixelData, width, height, format));
                         ctx.putImageData(imageData, 0, 0);
 
                         root.className = 'viewer';

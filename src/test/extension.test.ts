@@ -5,6 +5,7 @@ import * as path from 'path';
 // as well as import your extension to test it
 import * as vscode from 'vscode';
 import {
+	decodeRawImageToRgba,
 	decodePngDataUrl,
 	getConfigSearchDirectories,
 	getLocalResourceRoots,
@@ -21,6 +22,16 @@ suite('Extension Test Suite', () => {
 		assert.deepStrictEqual(
 			parseRawImageConfig(JSON.stringify({ width: 64, height: 32 }), 'D:\\repo\\.rawimagerc'),
 			{ width: 64, height: 32, headerSize: 0, format: 'rgb24' }
+		);
+	});
+
+	test('parseRawImageConfig accepts supported YUV formats', () => {
+		assert.deepStrictEqual(
+			parseRawImageConfig(
+				JSON.stringify({ width: 4, height: 2, headerSize: 16, format: 'yuv420p' }),
+				'D:\\repo\\.rawimagerc'
+			),
+			{ width: 4, height: 2, headerSize: 16, format: 'yuv420p' }
 		);
 	});
 
@@ -101,6 +112,13 @@ suite('Extension Test Suite', () => {
 		);
 	});
 
+	test('inferRawImageConfigFromFilename recognizes YUV formats', () => {
+		assert.deepStrictEqual(
+			inferRawImageConfigFromFilename('D:\\repo\\captures\\frame-640x480-yuyv422.yuv'),
+			{ width: 640, height: 480, format: 'yuyv422' }
+		);
+	});
+
 	test('resolveFallbackRawImageConfig merges filename inference with settings', () => {
 		assert.deepStrictEqual(
 			resolveFallbackRawImageConfig('D:\\repo\\captures\\frame_1920x1080.raw', {
@@ -147,5 +165,66 @@ suite('Extension Test Suite', () => {
 
 	test('decodePngDataUrl rejects invalid payloads', () => {
 		assert.throws(() => decodePngDataUrl('not-a-data-url'), /Invalid PNG data/);
+	});
+
+	test('decodeRawImageToRgba decodes yuv420p frames', () => {
+		const rgba = decodeRawImageToRgba(
+			new Uint8Array([
+				16, 82,
+				145, 235,
+				128,
+				128,
+			]),
+			2,
+			2,
+			'yuv420p'
+		);
+
+		assert.deepStrictEqual(Array.from(rgba), [
+			0, 0, 0, 255,
+			77, 77, 77, 255,
+			150, 150, 150, 255,
+			255, 255, 255, 255,
+		]);
+	});
+
+	test('decodeRawImageToRgba decodes nv12 frames', () => {
+		const rgba = decodeRawImageToRgba(
+			new Uint8Array([
+				16, 82,
+				145, 235,
+				128, 128,
+			]),
+			2,
+			2,
+			'nv12'
+		);
+
+		assert.deepStrictEqual(Array.from(rgba), [
+			0, 0, 0, 255,
+			77, 77, 77, 255,
+			150, 150, 150, 255,
+			255, 255, 255, 255,
+		]);
+	});
+
+	test('decodeRawImageToRgba decodes yuyv422 frames', () => {
+		const rgba = decodeRawImageToRgba(new Uint8Array([16, 128, 235, 128]), 2, 1, 'yuyv422');
+
+		assert.deepStrictEqual(Array.from(rgba), [
+			0, 0, 0, 255,
+			255, 255, 255, 255,
+		]);
+	});
+
+	test('decodeRawImageToRgba validates YUV frame geometry', () => {
+		assert.throws(
+			() => decodeRawImageToRgba(new Uint8Array([0, 0, 0]), 3, 2, 'yuv420p'),
+			/requires even width and height/
+		);
+		assert.throws(
+			() => decodeRawImageToRgba(new Uint8Array([0, 0, 0, 0]), 3, 1, 'yuyv422'),
+			/requires an even width/
+		);
 	});
 });
