@@ -5,6 +5,7 @@ import * as path from 'path';
 // as well as import your extension to test it
 import * as vscode from 'vscode';
 import {
+	createInitialRenderHandshake,
 	decodePngDataUrl,
 	getConfigSearchDirectories,
 	getLocalResourceRoots,
@@ -147,5 +148,81 @@ suite('Extension Test Suite', () => {
 
 	test('decodePngDataUrl rejects invalid payloads', () => {
 		assert.throws(() => decodePngDataUrl('not-a-data-url'), /Invalid PNG data/);
+	});
+
+	test('createInitialRenderHandshake clears both timers after ready', () => {
+		type ScheduledTimeout = {
+			callback: () => void;
+			delay: number;
+			cleared: boolean;
+		};
+
+		const scheduled: ScheduledTimeout[] = [];
+		const scheduleTimeout = (callback: () => void, delay: number): ReturnType<typeof setTimeout> => {
+			const handle: ScheduledTimeout = { callback, delay, cleared: false };
+			scheduled.push(handle);
+			return handle as unknown as ReturnType<typeof setTimeout>;
+		};
+		const cancelTimeout = (handle: ReturnType<typeof setTimeout>): void => {
+			(handle as unknown as ScheduledTimeout).cleared = true;
+		};
+		let sendCount = 0;
+		let warningCount = 0;
+
+		const handshake = createInitialRenderHandshake(
+			() => {
+				sendCount += 1;
+			},
+			() => {
+				warningCount += 1;
+			},
+			scheduleTimeout,
+			cancelTimeout
+		);
+
+		assert.strictEqual(handshake.handleMessage('ready'), true);
+		assert.strictEqual(sendCount, 1);
+		assert.strictEqual(warningCount, 0);
+		assert.deepStrictEqual(
+			scheduled.map((timeout) => timeout.delay),
+			[300, 5000]
+		);
+		assert.ok(scheduled.every((timeout) => timeout.cleared));
+	});
+
+	test('createInitialRenderHandshake dispose clears timers without sending', () => {
+		type ScheduledTimeout = {
+			cleared: boolean;
+		};
+
+		const scheduled: ScheduledTimeout[] = [];
+		const scheduleTimeout = (): ReturnType<typeof setTimeout> => {
+			const handle: ScheduledTimeout = { cleared: false };
+			scheduled.push(handle);
+			return handle as unknown as ReturnType<typeof setTimeout>;
+		};
+		const cancelTimeout = (handle: ReturnType<typeof setTimeout>): void => {
+			(handle as unknown as ScheduledTimeout).cleared = true;
+		};
+		let sendCount = 0;
+		let warningCount = 0;
+
+		const handshake = createInitialRenderHandshake(
+			() => {
+				sendCount += 1;
+			},
+			() => {
+				warningCount += 1;
+			},
+			scheduleTimeout,
+			cancelTimeout
+		);
+
+		handshake.dispose();
+
+		assert.strictEqual(sendCount, 0);
+		assert.strictEqual(warningCount, 0);
+		assert.strictEqual(scheduled.length, 2);
+		assert.ok(scheduled.every((timeout) => timeout.cleared));
 	});
 });

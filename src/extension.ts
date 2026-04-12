@@ -35,6 +35,15 @@ interface ResolvedRawImageConfig {
     source?: RawImageConfigSource;
 }
 
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+type TimeoutScheduler = (callback: () => void, delay: number) => TimeoutHandle;
+type TimeoutCanceler = (timeout: TimeoutHandle) => void;
+
+interface InitialRenderHandshake {
+    handleMessage(messageType: string): boolean;
+    dispose(): void;
+}
+
 class RawImageDocument implements vscode.CustomDocument {
     constructor(public readonly uri: vscode.Uri) {}
     dispose(): void {}
@@ -123,22 +132,17 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
             }, 100);
         };
 
-        // Send once even if ready handshake fails, to prevent permanent loading.
-        const initialSendTimer = setTimeout(() => {
-            sendInitialRenderPayload();
-        }, 300);
-
-        const readyWarningTimer = setTimeout(() => {
-            void vscode.window.showWarningMessage(
-                'Raw Image Viewer: webview did not send a ready message. Open "Developer: Open Webview Developer Tools" and check console errors.'
-            );
-        }, 5000);
+        const initialRenderHandshake = createInitialRenderHandshake(
+            sendInitialRenderPayload,
+            () => {
+                void vscode.window.showWarningMessage(
+                    'Raw Image Viewer: webview did not send a ready message. Open "Developer: Open Webview Developer Tools" and check console errors.'
+                );
+            }
+        );
 
         const listener = webviewPanel.webview.onDidReceiveMessage(async (message) => {
-            if (message.type === 'ready') {
-                clearTimeout(initialSendTimer);
-                clearTimeout(readyWarningTimer);
-                sendInitialRenderPayload();
+            if (initialRenderHandshake.handleMessage(message.type)) {
                 return;
             }
 
@@ -184,8 +188,7 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
         webviewPanel.webview.html = getWebviewHtml(nonce, webviewPanel.webview.cspSource);
 
         webviewPanel.onDidDispose(() => {
-            clearTimeout(initialSendTimer);
-            clearTimeout(readyWarningTimer);
+            initialRenderHandshake.dispose();
             if (refreshTimer) {
                 clearTimeout(refreshTimer);
             }
@@ -206,6 +209,38 @@ export function getConfigSearchDirectories(filePath: string): string[] {
         dir = parent;
     }
     return directories;
+}
+
+export function createInitialRenderHandshake(
+    sendInitialRenderPayload: () => void,
+    showReadyWarning: () => void,
+    scheduleTimeout: TimeoutScheduler = setTimeout,
+    cancelTimeout: TimeoutCanceler = clearTimeout
+): InitialRenderHandshake {
+    const initialSendTimer = scheduleTimeout(() => {
+        sendInitialRenderPayload();
+    }, 300);
+
+    const readyWarningTimer = scheduleTimeout(() => {
+        showReadyWarning();
+    }, 5000);
+
+    return {
+        handleMessage(messageType: string): boolean {
+            if (messageType !== 'ready') {
+                return false;
+            }
+
+            cancelTimeout(initialSendTimer);
+            cancelTimeout(readyWarningTimer);
+            sendInitialRenderPayload();
+            return true;
+        },
+        dispose(): void {
+            cancelTimeout(initialSendTimer);
+            cancelTimeout(readyWarningTimer);
+        },
+    };
 }
 
 export function findConfigPath(filePath: string): string | undefined {
