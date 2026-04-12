@@ -841,6 +841,40 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
             border: 1px solid #444;
             box-shadow: 0 0 20px rgba(0,0,0,0.5);
         }
+        .window-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: #9cdcfe;
+            font-family: 'Consolas', 'Courier New', monospace;
+            width: 100%;
+            max-width: 640px;
+        }
+        .window-controls label {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+        }
+        .window-controls input[type=range] {
+            width: 140px;
+            accent-color: #0e639c;
+            cursor: pointer;
+        }
+        .window-reset {
+            appearance: none;
+            background: none;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #9cdcfe;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 3px 8px;
+        }
+        .window-reset:hover { border-color: #9cdcfe; }
         .spinner {
             width: 40px; height: 40px;
             border: 3px solid #333;
@@ -869,6 +903,46 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         ${createRawImageDecodeState.toString()}
         ${decodeRawPixel.toString()}
         ${appendRawImageChunk.toString()}
+
+        function decodeRawGrayValues(pixelData, totalPixels, fmt) {
+            var values = new Uint16Array(totalPixels);
+            var maxValue = 255;
+            if (fmt === 'gray8') {
+                for (var p = 0; p < totalPixels; p++) {
+                    values[p] = pixelData[p] || 0;
+                }
+            } else if (fmt === 'gray16le') {
+                maxValue = 65535;
+                for (var p = 0, si = 0; p < totalPixels; p++, si += 2) {
+                    values[p] = (((pixelData[si + 1] || 0) << 8) | (pixelData[si] || 0));
+                }
+            } else if (fmt === 'gray16be') {
+                maxValue = 65535;
+                for (var p = 0, si = 0; p < totalPixels; p++, si += 2) {
+                    values[p] = (((pixelData[si] || 0) << 8) | (pixelData[si + 1] || 0));
+                }
+            }
+            return { values: values, maxValue: maxValue };
+        }
+
+        function applyWindowLevel(rawGray, totalPixels, windowMin, windowMax, pixels) {
+            var range = windowMax - windowMin;
+            for (var p = 0; p < totalPixels; p++) {
+                var mapped;
+                if (range <= 0) {
+                    mapped = 128;
+                } else {
+                    mapped = Math.round(((rawGray[p] - windowMin) / range) * 255);
+                    if (mapped < 0) { mapped = 0; }
+                    if (mapped > 255) { mapped = 255; }
+                }
+                var idx = p * 4;
+                pixels[idx] = mapped;
+                pixels[idx + 1] = mapped;
+                pixels[idx + 2] = mapped;
+                pixels[idx + 3] = 255;
+            }
+        }
 
         function clearReadyTimer() {
             if (readyTimer) {
@@ -981,7 +1055,29 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         var imageData = ctx.createImageData(width, height);
                         var pixels = imageData.data;
 
-                        if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
+                        var isGrayscale = (format === 'gray8' || format === 'gray16le' || format === 'gray16be');
+                        var rawGray = null;
+                        var grayMaxValue = 255;
+                        var grayWindowMin = 0;
+                        var grayWindowMax = 255;
+
+                        if (isGrayscale) {
+                            var rawBytes = new Uint8Array(await response.arrayBuffer());
+                            var pixelBytes = rawBytes.subarray(headerSize);
+                            var grayDecoded = decodeRawGrayValues(pixelBytes, width * height, format);
+                            rawGray = grayDecoded.values;
+                            grayMaxValue = grayDecoded.maxValue;
+                            var autoMin = grayMaxValue;
+                            var autoMax = 0;
+                            for (var gi = 0; gi < rawGray.length; gi++) {
+                                if (rawGray[gi] < autoMin) { autoMin = rawGray[gi]; }
+                                if (rawGray[gi] > autoMax) { autoMax = rawGray[gi]; }
+                            }
+                            if (autoMin >= autoMax) { autoMin = 0; autoMax = grayMaxValue; }
+                            grayWindowMin = autoMin;
+                            grayWindowMax = autoMax;
+                            applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
+                        } else if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
                             var reader = response.body.getReader();
                             var decodeState = createRawImageDecodeState(width, height, headerSize, format);
                             try {
@@ -1044,6 +1140,81 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         viewerHeader.appendChild(exportButton);
                         root.appendChild(viewerHeader);
                         root.appendChild(canvas);
+
+                        if (rawGray !== null) {
+                            var totalPx = width * height;
+                            var wlControls = document.createElement('div');
+                            wlControls.className = 'window-controls';
+
+                            var minValSpan = document.createElement('span');
+                            minValSpan.textContent = String(grayWindowMin);
+                            var minLbl = document.createElement('label');
+                            minLbl.appendChild(document.createTextNode('Min\u00a0'));
+                            var minSlider = document.createElement('input');
+                            minSlider.type = 'range';
+                            minSlider.min = '0';
+                            minSlider.max = String(grayMaxValue);
+                            minSlider.value = String(grayWindowMin);
+                            minLbl.appendChild(minSlider);
+                            minLbl.appendChild(document.createTextNode('\u00a0'));
+                            minLbl.appendChild(minValSpan);
+
+                            var maxValSpan = document.createElement('span');
+                            maxValSpan.textContent = String(grayWindowMax);
+                            var maxLbl = document.createElement('label');
+                            maxLbl.appendChild(document.createTextNode('Max\u00a0'));
+                            var maxSlider = document.createElement('input');
+                            maxSlider.type = 'range';
+                            maxSlider.min = '0';
+                            maxSlider.max = String(grayMaxValue);
+                            maxSlider.value = String(grayWindowMax);
+                            maxLbl.appendChild(maxSlider);
+                            maxLbl.appendChild(document.createTextNode('\u00a0'));
+                            maxLbl.appendChild(maxValSpan);
+
+                            var resetBtn = document.createElement('button');
+                            resetBtn.type = 'button';
+                            resetBtn.className = 'window-reset';
+                            resetBtn.textContent = 'Reset';
+
+                            var initialMin = grayWindowMin;
+                            var initialMax = grayWindowMax;
+                            var capturedRawGray = rawGray;
+                            var capturedCtx = ctx;
+                            var capturedImageData = imageData;
+
+                            function onWindowChange() {
+                                var wMin = parseInt(minSlider.value, 10);
+                                var wMax = parseInt(maxSlider.value, 10);
+                                minValSpan.textContent = String(wMin);
+                                maxValSpan.textContent = String(wMax);
+                                applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data);
+                                capturedCtx.putImageData(capturedImageData, 0, 0);
+                            }
+
+                            minSlider.addEventListener('input', function() {
+                                var wMin = parseInt(minSlider.value, 10);
+                                var wMax = parseInt(maxSlider.value, 10);
+                                if (wMin > wMax) { minSlider.value = String(wMax); }
+                                onWindowChange();
+                            });
+                            maxSlider.addEventListener('input', function() {
+                                var wMin = parseInt(minSlider.value, 10);
+                                var wMax = parseInt(maxSlider.value, 10);
+                                if (wMax < wMin) { maxSlider.value = String(wMin); }
+                                onWindowChange();
+                            });
+                            resetBtn.addEventListener('click', function() {
+                                minSlider.value = String(initialMin);
+                                maxSlider.value = String(initialMax);
+                                onWindowChange();
+                            });
+
+                            wlControls.appendChild(minLbl);
+                            wlControls.appendChild(maxLbl);
+                            wlControls.appendChild(resetBtn);
+                            root.appendChild(wlControls);
+                        }
                     })
                     .catch(function(err) {
                         if (err && err.name === 'AbortError') {
