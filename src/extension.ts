@@ -166,6 +166,117 @@ export function appendRawImageChunk(
     }
 }
 
+type GrayscaleStreamFormat = 'gray8' | 'gray16le' | 'gray16be';
+
+interface GrayDecodeState {
+    format: GrayscaleStreamFormat;
+    totalPixels: number;
+    pixelsWritten: number;
+    remainingHeaderBytes: number;
+    bytesPerPixel: number;
+    pendingByte: number;
+    hasPendingByte: boolean;
+    rawGray: Uint16Array;
+    autoMin: number;
+    autoMax: number;
+    maxValue: number;
+}
+
+export function createGrayDecodeState(
+    width: number,
+    height: number,
+    headerSize: number,
+    format: GrayscaleStreamFormat
+): GrayDecodeState {
+    const totalPixels = width * height;
+    const bytesPerPixel = format === 'gray8' ? 1 : 2;
+    const maxValue = format === 'gray8' ? 255 : 65535;
+    return {
+        format,
+        totalPixels,
+        pixelsWritten: 0,
+        remainingHeaderBytes: Math.max(0, headerSize),
+        bytesPerPixel,
+        pendingByte: 0,
+        hasPendingByte: false,
+        rawGray: new Uint16Array(totalPixels),
+        autoMin: maxValue,
+        autoMax: 0,
+        maxValue,
+    };
+}
+
+export function appendGrayChunk(state: GrayDecodeState, chunk: Uint8Array): void {
+    if (state.pixelsWritten >= state.totalPixels || chunk.length === 0) {
+        return;
+    }
+
+    let offset = 0;
+    if (state.remainingHeaderBytes > 0) {
+        const skipped = Math.min(state.remainingHeaderBytes, chunk.length);
+        state.remainingHeaderBytes -= skipped;
+        offset += skipped;
+    }
+
+    if (offset >= chunk.length) {
+        return;
+    }
+
+    const writeGrayPixel = (value: number): void => {
+        state.rawGray[state.pixelsWritten] = value;
+        if (value < state.autoMin) { state.autoMin = value; }
+        if (value > state.autoMax) { state.autoMax = value; }
+        state.pixelsWritten += 1;
+    };
+
+    if (state.format === 'gray8') {
+        while (offset < chunk.length && state.pixelsWritten < state.totalPixels) {
+            writeGrayPixel(chunk[offset++]);
+        }
+    } else {
+        if (state.hasPendingByte && offset < chunk.length && state.pixelsWritten < state.totalPixels) {
+            const b0 = state.pendingByte;
+            const b1 = chunk[offset++];
+            writeGrayPixel(state.format === 'gray16le' ? ((b1 << 8) | b0) : ((b0 << 8) | b1));
+            state.hasPendingByte = false;
+        }
+        while (offset + 2 <= chunk.length && state.pixelsWritten < state.totalPixels) {
+            const b0 = chunk[offset++];
+            const b1 = chunk[offset++];
+            writeGrayPixel(state.format === 'gray16le' ? ((b1 << 8) | b0) : ((b0 << 8) | b1));
+        }
+        if (offset < chunk.length && state.pixelsWritten < state.totalPixels) {
+            state.pendingByte = chunk[offset];
+            state.hasPendingByte = true;
+        }
+    }
+}
+
+export function applyWindowLevel(
+    rawGray: Uint16Array,
+    totalPixels: number,
+    windowMin: number,
+    windowMax: number,
+    pixels: Uint8ClampedArray
+): void {
+    const range = windowMax - windowMin;
+    for (let p = 0; p < totalPixels; p++) {
+        let mapped: number;
+        if (range <= 0) {
+            mapped = 128;
+        } else {
+            mapped = Math.round(((rawGray[p] - windowMin) / range) * 255);
+            if (mapped < 0) { mapped = 0; }
+            if (mapped > 255) { mapped = 255; }
+        }
+        const idx = p * 4;
+        pixels[idx] = mapped;
+        pixels[idx + 1] = mapped;
+        pixels[idx + 2] = mapped;
+        pixels[idx + 3] = 255;
+    }
+}
+
 class RawImageDocument implements vscode.CustomDocument {
     constructor(public readonly uri: vscode.Uri) {}
     dispose(): void {}
@@ -903,46 +1014,9 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         ${createRawImageDecodeState.toString()}
         ${decodeRawPixel.toString()}
         ${appendRawImageChunk.toString()}
-
-        function decodeRawGrayValues(pixelData, totalPixels, fmt) {
-            var values = new Uint16Array(totalPixels);
-            var maxValue = 255;
-            if (fmt === 'gray8') {
-                for (var p = 0; p < totalPixels; p++) {
-                    values[p] = pixelData[p] || 0;
-                }
-            } else if (fmt === 'gray16le') {
-                maxValue = 65535;
-                for (var p = 0, si = 0; p < totalPixels; p++, si += 2) {
-                    values[p] = (((pixelData[si + 1] || 0) << 8) | (pixelData[si] || 0));
-                }
-            } else if (fmt === 'gray16be') {
-                maxValue = 65535;
-                for (var p = 0, si = 0; p < totalPixels; p++, si += 2) {
-                    values[p] = (((pixelData[si] || 0) << 8) | (pixelData[si + 1] || 0));
-                }
-            }
-            return { values: values, maxValue: maxValue };
-        }
-
-        function applyWindowLevel(rawGray, totalPixels, windowMin, windowMax, pixels) {
-            var range = windowMax - windowMin;
-            for (var p = 0; p < totalPixels; p++) {
-                var mapped;
-                if (range <= 0) {
-                    mapped = 128;
-                } else {
-                    mapped = Math.round(((rawGray[p] - windowMin) / range) * 255);
-                    if (mapped < 0) { mapped = 0; }
-                    if (mapped > 255) { mapped = 255; }
-                }
-                var idx = p * 4;
-                pixels[idx] = mapped;
-                pixels[idx + 1] = mapped;
-                pixels[idx + 2] = mapped;
-                pixels[idx + 3] = 255;
-            }
-        }
+        ${createGrayDecodeState.toString()}
+        ${appendGrayChunk.toString()}
+        ${applyWindowLevel.toString()}
 
         function clearReadyTimer() {
             if (readyTimer) {
@@ -1062,17 +1136,29 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         var grayWindowMax = 255;
 
                         if (isGrayscale) {
-                            var rawBytes = new Uint8Array(await response.arrayBuffer());
-                            var pixelBytes = rawBytes.subarray(headerSize);
-                            var grayDecoded = decodeRawGrayValues(pixelBytes, width * height, format);
-                            rawGray = grayDecoded.values;
-                            grayMaxValue = grayDecoded.maxValue;
-                            var autoMin = grayMaxValue;
-                            var autoMax = 0;
-                            for (var gi = 0; gi < rawGray.length; gi++) {
-                                if (rawGray[gi] < autoMin) { autoMin = rawGray[gi]; }
-                                if (rawGray[gi] > autoMax) { autoMax = rawGray[gi]; }
+                            var grayState = createGrayDecodeState(width, height, headerSize, format);
+                            if (response.body && typeof response.body.getReader === 'function') {
+                                var grayReader = response.body.getReader();
+                                try {
+                                    while (grayState.pixelsWritten < grayState.totalPixels) {
+                                        var grayStep = await grayReader.read();
+                                        if (grayStep.done) { break; }
+                                        if (grayStep.value) { appendGrayChunk(grayState, grayStep.value); }
+                                    }
+                                    if (grayState.pixelsWritten >= grayState.totalPixels && typeof grayReader.cancel === 'function') {
+                                        await grayReader.cancel();
+                                    }
+                                } finally {
+                                    grayReader.releaseLock();
+                                }
+                            } else {
+                                var rawBuf = new Uint8Array(await response.arrayBuffer());
+                                appendGrayChunk(grayState, rawBuf);
                             }
+                            rawGray = grayState.rawGray;
+                            grayMaxValue = grayState.maxValue;
+                            var autoMin = grayState.autoMin;
+                            var autoMax = grayState.autoMax;
                             if (autoMin >= autoMax) { autoMin = 0; autoMax = grayMaxValue; }
                             grayWindowMin = autoMin;
                             grayWindowMax = autoMax;
@@ -1182,32 +1268,39 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             var capturedRawGray = rawGray;
                             var capturedCtx = ctx;
                             var capturedImageData = imageData;
+                            var rafPending = false;
 
-                            function onWindowChange() {
-                                var wMin = parseInt(minSlider.value, 10);
-                                var wMax = parseInt(maxSlider.value, 10);
-                                minValSpan.textContent = String(wMin);
-                                maxValSpan.textContent = String(wMax);
-                                applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data);
-                                capturedCtx.putImageData(capturedImageData, 0, 0);
+                            function scheduleWindowRender() {
+                                if (!rafPending) {
+                                    rafPending = true;
+                                    requestAnimationFrame(function() {
+                                        rafPending = false;
+                                        var wMin = parseInt(minSlider.value, 10);
+                                        var wMax = parseInt(maxSlider.value, 10);
+                                        minValSpan.textContent = String(wMin);
+                                        maxValSpan.textContent = String(wMax);
+                                        applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data);
+                                        capturedCtx.putImageData(capturedImageData, 0, 0);
+                                    });
+                                }
                             }
 
                             minSlider.addEventListener('input', function() {
                                 var wMin = parseInt(minSlider.value, 10);
                                 var wMax = parseInt(maxSlider.value, 10);
                                 if (wMin > wMax) { minSlider.value = String(wMax); }
-                                onWindowChange();
+                                scheduleWindowRender();
                             });
                             maxSlider.addEventListener('input', function() {
                                 var wMin = parseInt(minSlider.value, 10);
                                 var wMax = parseInt(maxSlider.value, 10);
                                 if (wMax < wMin) { maxSlider.value = String(wMin); }
-                                onWindowChange();
+                                scheduleWindowRender();
                             });
                             resetBtn.addEventListener('click', function() {
                                 minSlider.value = String(initialMin);
                                 maxSlider.value = String(initialMax);
-                                onWindowChange();
+                                scheduleWindowRender();
                             });
 
                             wlControls.appendChild(minLbl);
