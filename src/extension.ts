@@ -2,16 +2,10 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const supportedFormats = [
-    'gray8',
-    'gray16le',
-    'gray16be',
-    'rgb24',
-    'bgr24',
-    'rgba32',
-    'bgra32',
-] as const;
+const streamDecodableFormats = ['gray8', 'gray16le', 'gray16be', 'rgb24', 'bgr24', 'rgba32', 'bgra32'] as const;
+const supportedFormats = [...streamDecodableFormats, 'yuv420p', 'nv12', 'yuyv422'] as const;
 
+type StreamDecodableRawImageFormat = (typeof streamDecodableFormats)[number];
 type RawImageFormat = (typeof supportedFormats)[number];
 type RawImageConfigSource = 'rawimagerc' | 'filename' | 'settings' | 'filename+settings';
 
@@ -33,6 +27,143 @@ interface RawImageFallbackSettings {
 interface ResolvedRawImageConfig {
     config: RawImageConfig | null;
     source?: RawImageConfigSource;
+}
+
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+type TimeoutScheduler = (callback: () => void, delay: number) => TimeoutHandle;
+type TimeoutCanceler = (timeout: TimeoutHandle) => void;
+
+interface InitialRenderHandshake {
+    handleMessage(messageType: string): boolean;
+    dispose(): void;
+}
+
+interface RawImageDecodeState {
+    format: StreamDecodableRawImageFormat;
+    totalPixels: number;
+    pixelsWritten: number;
+    remainingHeaderBytes: number;
+    bytesPerPixel: number;
+    pendingBytes: Uint8Array;
+    pendingLength: number;
+}
+
+export function getBytesPerPixel(format: StreamDecodableRawImageFormat): number {
+    switch (format) {
+        case 'gray8':
+            return 1;
+        case 'gray16le':
+        case 'gray16be':
+            return 2;
+        case 'rgb24':
+        case 'bgr24':
+            return 3;
+        case 'rgba32':
+        case 'bgra32':
+            return 4;
+    }
+}
+
+export function createRawImageDecodeState(
+    width: number,
+    height: number,
+    headerSize: number,
+    format: StreamDecodableRawImageFormat
+): RawImageDecodeState {
+    const bytesPerPixel = getBytesPerPixel(format);
+    return {
+        format,
+        totalPixels: width * height,
+        pixelsWritten: 0,
+        remainingHeaderBytes: Math.max(0, headerSize),
+        bytesPerPixel,
+        pendingBytes: new Uint8Array(bytesPerPixel),
+        pendingLength: 0,
+    };
+}
+
+function decodeRawPixel(
+    source: Uint8Array,
+    offset: number,
+    format: StreamDecodableRawImageFormat
+): [number, number, number, number] {
+    switch (format) {
+        case 'gray8': {
+            const value = source[offset] ?? 0;
+            return [value, value, value, 255];
+        }
+        case 'gray16le': {
+            const lowByte = source[offset] ?? 0;
+            const highByte = source[offset + 1] ?? 0;
+            const value = ((highByte << 8) | lowByte) >> 8;
+            return [value, value, value, 255];
+        }
+        case 'gray16be': {
+            const highByte = source[offset] ?? 0;
+            const lowByte = source[offset + 1] ?? 0;
+            const value = ((highByte << 8) | lowByte) >> 8;
+            return [value, value, value, 255];
+        }
+        case 'rgb24':
+            return [source[offset] ?? 0, source[offset + 1] ?? 0, source[offset + 2] ?? 0, 255];
+        case 'bgr24':
+            return [source[offset + 2] ?? 0, source[offset + 1] ?? 0, source[offset] ?? 0, 255];
+        case 'rgba32':
+            return [source[offset] ?? 0, source[offset + 1] ?? 0, source[offset + 2] ?? 0, source[offset + 3] ?? 0];
+        case 'bgra32':
+            return [source[offset + 2] ?? 0, source[offset + 1] ?? 0, source[offset] ?? 0, source[offset + 3] ?? 0];
+    }
+}
+
+export function appendRawImageChunk(
+    state: RawImageDecodeState,
+    chunk: Uint8Array,
+    pixels: Uint8ClampedArray
+): void {
+    if (state.pixelsWritten >= state.totalPixels || chunk.length === 0) {
+        return;
+    }
+
+    let offset = 0;
+    if (state.remainingHeaderBytes > 0) {
+        const skipped = Math.min(state.remainingHeaderBytes, chunk.length);
+        state.remainingHeaderBytes -= skipped;
+        offset += skipped;
+    }
+
+    if (offset >= chunk.length) {
+        return;
+    }
+
+    while (state.pendingLength > 0 && offset < chunk.length && state.pendingLength < state.bytesPerPixel) {
+        state.pendingBytes[state.pendingLength++] = chunk[offset++];
+    }
+
+    if (state.pendingLength === state.bytesPerPixel && state.pixelsWritten < state.totalPixels) {
+        const [r, g, b, a] = decodeRawPixel(state.pendingBytes, 0, state.format);
+        const destinationOffset = state.pixelsWritten * 4;
+        pixels[destinationOffset] = r;
+        pixels[destinationOffset + 1] = g;
+        pixels[destinationOffset + 2] = b;
+        pixels[destinationOffset + 3] = a;
+        state.pixelsWritten += 1;
+        state.pendingLength = 0;
+    }
+
+    while (offset + state.bytesPerPixel <= chunk.length && state.pixelsWritten < state.totalPixels) {
+        const [r, g, b, a] = decodeRawPixel(chunk, offset, state.format);
+        const destinationOffset = state.pixelsWritten * 4;
+        pixels[destinationOffset] = r;
+        pixels[destinationOffset + 1] = g;
+        pixels[destinationOffset + 2] = b;
+        pixels[destinationOffset + 3] = a;
+        state.pixelsWritten += 1;
+        offset += state.bytesPerPixel;
+    }
+
+    while (offset < chunk.length && state.pendingLength < state.bytesPerPixel && state.pixelsWritten < state.totalPixels) {
+        state.pendingBytes[state.pendingLength++] = chunk[offset++];
+    }
 }
 
 class RawImageDocument implements vscode.CustomDocument {
@@ -123,22 +254,17 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
             }, 100);
         };
 
-        // Send once even if ready handshake fails, to prevent permanent loading.
-        const initialSendTimer = setTimeout(() => {
-            sendInitialRenderPayload();
-        }, 300);
-
-        const readyWarningTimer = setTimeout(() => {
-            void vscode.window.showWarningMessage(
-                'Raw Image Viewer: webview did not send a ready message. Open "Developer: Open Webview Developer Tools" and check console errors.'
-            );
-        }, 5000);
+        const initialRenderHandshake = createInitialRenderHandshake(
+            sendInitialRenderPayload,
+            () => {
+                void vscode.window.showWarningMessage(
+                    'Raw Image Viewer: webview did not send a ready message. Open "Developer: Open Webview Developer Tools" and check console errors.'
+                );
+            }
+        );
 
         const listener = webviewPanel.webview.onDidReceiveMessage(async (message) => {
-            if (message.type === 'ready') {
-                clearTimeout(initialSendTimer);
-                clearTimeout(readyWarningTimer);
-                sendInitialRenderPayload();
+            if (initialRenderHandshake.handleMessage(message.type)) {
                 return;
             }
 
@@ -184,8 +310,7 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
         webviewPanel.webview.html = getWebviewHtml(nonce, webviewPanel.webview.cspSource);
 
         webviewPanel.onDidDispose(() => {
-            clearTimeout(initialSendTimer);
-            clearTimeout(readyWarningTimer);
+            initialRenderHandshake.dispose();
             if (refreshTimer) {
                 clearTimeout(refreshTimer);
             }
@@ -206,6 +331,38 @@ export function getConfigSearchDirectories(filePath: string): string[] {
         dir = parent;
     }
     return directories;
+}
+
+export function createInitialRenderHandshake(
+    sendInitialRenderPayload: () => void,
+    showReadyWarning: () => void,
+    scheduleTimeout: TimeoutScheduler = setTimeout,
+    cancelTimeout: TimeoutCanceler = clearTimeout
+): InitialRenderHandshake {
+    const initialSendTimer = scheduleTimeout(() => {
+        sendInitialRenderPayload();
+    }, 300);
+
+    const readyWarningTimer = scheduleTimeout(() => {
+        showReadyWarning();
+    }, 5000);
+
+    return {
+        handleMessage(messageType: string): boolean {
+            if (messageType !== 'ready') {
+                return false;
+            }
+
+            cancelTimeout(initialSendTimer);
+            cancelTimeout(readyWarningTimer);
+            sendInitialRenderPayload();
+            return true;
+        },
+        dispose(): void {
+            cancelTimeout(initialSendTimer);
+            cancelTimeout(readyWarningTimer);
+        },
+    };
 }
 
 export function findConfigPath(filePath: string): string | undefined {
@@ -453,6 +610,130 @@ export function decodePngDataUrl(dataUrl: unknown): Uint8Array {
     return Uint8Array.from(Buffer.from(match[1], 'base64'));
 }
 
+export function decodeRawImageToRgba(
+    pixelData: Uint8Array,
+    width: number,
+    height: number,
+    format: RawImageFormat
+): Uint8ClampedArray {
+    const totalPixels = width * height;
+    const pixels = new Uint8ClampedArray(totalPixels * 4);
+
+    const clampToByte = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
+    const writePixel = (pixelIndex: number, r: number, g: number, b: number, a = 255): void => {
+        const offset = pixelIndex * 4;
+        pixels[offset] = clampToByte(r);
+        pixels[offset + 1] = clampToByte(g);
+        pixels[offset + 2] = clampToByte(b);
+        pixels[offset + 3] = clampToByte(a);
+    };
+    const writeYuvPixel = (pixelIndex: number, y: number, u: number, v: number): void => {
+        const c = Math.max(0, y - 16);
+        const d = u - 128;
+        const e = v - 128;
+        writePixel(
+            pixelIndex,
+            (298 * c + 409 * e + 128) >> 8,
+            (298 * c - 100 * d - 208 * e + 128) >> 8,
+            (298 * c + 516 * d + 128) >> 8
+        );
+    };
+    const requireBytes = (requiredLength: number): void => {
+        if (pixelData.length < requiredLength) {
+            throw new Error(`Expected at least ${requiredLength} bytes for ${width}x${height} ${format}, but found ${pixelData.length}.`);
+        }
+    };
+
+    switch (format) {
+        case 'gray8':
+            for (let p = 0; p < totalPixels && p < pixelData.length; p++) {
+                const value = pixelData[p];
+                writePixel(p, value, value, value);
+            }
+            return pixels;
+        case 'gray16le':
+            for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 1 < pixelData.length; p++, srcIdx += 2) {
+                const value = ((pixelData[srcIdx + 1] << 8) | pixelData[srcIdx]) >> 8;
+                writePixel(p, value, value, value);
+            }
+            return pixels;
+        case 'gray16be':
+            for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 1 < pixelData.length; p++, srcIdx += 2) {
+                const value = ((pixelData[srcIdx] << 8) | pixelData[srcIdx + 1]) >> 8;
+                writePixel(p, value, value, value);
+            }
+            return pixels;
+        case 'rgb24':
+            for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 2 < pixelData.length; p++, srcIdx += 3) {
+                writePixel(p, pixelData[srcIdx], pixelData[srcIdx + 1], pixelData[srcIdx + 2]);
+            }
+            return pixels;
+        case 'bgr24':
+            for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 2 < pixelData.length; p++, srcIdx += 3) {
+                writePixel(p, pixelData[srcIdx + 2], pixelData[srcIdx + 1], pixelData[srcIdx]);
+            }
+            return pixels;
+        case 'rgba32':
+            for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 3 < pixelData.length; p++, srcIdx += 4) {
+                writePixel(p, pixelData[srcIdx], pixelData[srcIdx + 1], pixelData[srcIdx + 2], pixelData[srcIdx + 3]);
+            }
+            return pixels;
+        case 'bgra32':
+            for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 3 < pixelData.length; p++, srcIdx += 4) {
+                writePixel(p, pixelData[srcIdx + 2], pixelData[srcIdx + 1], pixelData[srcIdx], pixelData[srcIdx + 3]);
+            }
+            return pixels;
+        case 'yuv420p': {
+            if (width % 2 !== 0 || height % 2 !== 0) {
+                throw new Error(`Format ${format} requires even width and height.`);
+            }
+            const lumaPlaneSize = totalPixels;
+            const chromaPlaneSize = totalPixels / 4;
+            requireBytes(lumaPlaneSize + chromaPlaneSize * 2);
+            const uOffset = lumaPlaneSize;
+            const vOffset = uOffset + chromaPlaneSize;
+            const chromaWidth = width / 2;
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const pixelIndex = y * width + x;
+                    const chromaIndex = Math.floor(y / 2) * chromaWidth + Math.floor(x / 2);
+                    writeYuvPixel(pixelIndex, pixelData[pixelIndex], pixelData[uOffset + chromaIndex], pixelData[vOffset + chromaIndex]);
+                }
+            }
+            return pixels;
+        }
+        case 'nv12': {
+            if (width % 2 !== 0 || height % 2 !== 0) {
+                throw new Error(`Format ${format} requires even width and height.`);
+            }
+            const lumaPlaneSize = totalPixels;
+            requireBytes(lumaPlaneSize + totalPixels / 2);
+            const uvOffset = lumaPlaneSize;
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const pixelIndex = y * width + x;
+                    const chromaIndex = uvOffset + Math.floor(y / 2) * width + Math.floor(x / 2) * 2;
+                    writeYuvPixel(pixelIndex, pixelData[pixelIndex], pixelData[chromaIndex], pixelData[chromaIndex + 1]);
+                }
+            }
+            return pixels;
+        }
+        case 'yuyv422':
+            if (width % 2 !== 0) {
+                throw new Error(`Format ${format} requires an even width.`);
+            }
+            for (let p = 0, srcIdx = 0; p + 1 < totalPixels && srcIdx + 3 < pixelData.length; p += 2, srcIdx += 4) {
+                const y0 = pixelData[srcIdx];
+                const u = pixelData[srcIdx + 1];
+                const y1 = pixelData[srcIdx + 2];
+                const v = pixelData[srcIdx + 3];
+                writeYuvPixel(p, y0, u, v);
+                writeYuvPixel(p + 1, y1, u, v);
+            }
+            return pixels;
+    }
+}
+
 function getNonce(): string {
     let text = '';
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -577,8 +858,17 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
     </div>
     <script nonce="${nonce}">
         const vscode = acquireVsCodeApi();
+        const decodeRawImageToRgba = ${decodeRawImageToRgba.toString()};
+        const streamDecodableFormats = new Set(${JSON.stringify(streamDecodableFormats)});
         var readyTimer = null;
         var startupTimeout = null;
+        var activeAbortController = null;
+        var activeRenderId = 0;
+
+        ${getBytesPerPixel.toString()}
+        ${createRawImageDecodeState.toString()}
+        ${decodeRawPixel.toString()}
+        ${appendRawImageChunk.toString()}
 
         function clearReadyTimer() {
             if (readyTimer) {
@@ -644,6 +934,9 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         '<tr><td><code>bgr24</code></td><td>24-bit BGR</td><td>3</td></tr>' +
                         '<tr><td><code>rgba32</code></td><td>32-bit RGBA</td><td>4</td></tr>' +
                         '<tr><td><code>bgra32</code></td><td>32-bit BGRA</td><td>4</td></tr>' +
+                        '<tr><td><code>yuv420p</code></td><td>Planar YUV 4:2:0</td><td>1.5</td></tr>' +
+                        '<tr><td><code>nv12</code></td><td>Semi-planar YUV 4:2:0</td><td>1.5</td></tr>' +
+                        '<tr><td><code>yuyv422</code></td><td>Packed YUV 4:2:2</td><td>2</td></tr>' +
                         '</table>' +
                         '</div>';
                     return;
@@ -660,16 +953,22 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                     return;
                 }
 
-                fetch(fileUri)
-                    .then(function(response) {
+                if (activeAbortController) {
+                    activeAbortController.abort();
+                }
+
+                activeAbortController = typeof AbortController === 'function' ? new AbortController() : null;
+                var currentRenderId = ++activeRenderId;
+                var shouldStreamDecode = streamDecodableFormats.has(format);
+
+                root.className = 'center';
+                root.innerHTML = '<div class="spinner"></div><p>Loading...</p>';
+
+                fetch(fileUri, activeAbortController ? { signal: activeAbortController.signal } : undefined)
+                    .then(async function(response) {
                         if (!response.ok) {
                             throw new Error('Failed to read file in webview: HTTP ' + response.status);
                         }
-                        return response.arrayBuffer();
-                    })
-                    .then(function(buffer) {
-                        var rawBytes = new Uint8Array(buffer);
-                        var pixelData = rawBytes.subarray(headerSize);
 
                         var canvas = document.createElement('canvas');
                         canvas.width = width;
@@ -682,58 +981,32 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         var imageData = ctx.createImageData(width, height);
                         var pixels = imageData.data;
 
-                        var srcIdx = 0;
-                        var dstIdx = 0;
-                        var totalPixels = width * height;
-
-                        for (var p = 0; p < totalPixels && srcIdx < pixelData.length; p++) {
-                            var r = 0, g = 0, b = 0, a = 255;
-                            switch (format) {
-                                case 'gray8':
-                                    r = g = b = pixelData[srcIdx++] || 0;
-                                    break;
-                                case 'gray16le': {
-                                    const lowByte = pixelData[srcIdx++] || 0;
-                                    const highByte = pixelData[srcIdx++] || 0;
-                                    r = g = b = ((highByte << 8) | lowByte) >> 8;
-                                    break;
+                        if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
+                            var reader = response.body.getReader();
+                            var decodeState = createRawImageDecodeState(width, height, headerSize, format);
+                            try {
+                                while (decodeState.pixelsWritten < decodeState.totalPixels) {
+                                    var step = await reader.read();
+                                    if (step.done) {
+                                        break;
+                                    }
+                                    if (step.value) {
+                                        appendRawImageChunk(decodeState, step.value, pixels);
+                                    }
                                 }
-                                case 'gray16be': {
-                                    const highByte = pixelData[srcIdx++] || 0;
-                                    const lowByte = pixelData[srcIdx++] || 0;
-                                    r = g = b = ((highByte << 8) | lowByte) >> 8;
-                                    break;
+                                if (decodeState.pixelsWritten >= decodeState.totalPixels && typeof reader.cancel === 'function') {
+                                    await reader.cancel();
                                 }
-                                case 'rgb24':
-                                    r = pixelData[srcIdx++] || 0;
-                                    g = pixelData[srcIdx++] || 0;
-                                    b = pixelData[srcIdx++] || 0;
-                                    break;
-                                case 'bgr24':
-                                    b = pixelData[srcIdx++] || 0;
-                                    g = pixelData[srcIdx++] || 0;
-                                    r = pixelData[srcIdx++] || 0;
-                                    break;
-                                case 'rgba32':
-                                    r = pixelData[srcIdx++] || 0;
-                                    g = pixelData[srcIdx++] || 0;
-                                    b = pixelData[srcIdx++] || 0;
-                                    a = pixelData[srcIdx++] || 0;
-                                    break;
-                                case 'bgra32':
-                                    b = pixelData[srcIdx++] || 0;
-                                    g = pixelData[srcIdx++] || 0;
-                                    r = pixelData[srcIdx++] || 0;
-                                    a = pixelData[srcIdx++] || 0;
-                                    break;
-                                default:
-                                    r = g = b = 0;
-                                    break;
+                            } finally {
+                                reader.releaseLock();
                             }
-                            pixels[dstIdx++] = r;
-                            pixels[dstIdx++] = g;
-                            pixels[dstIdx++] = b;
-                            pixels[dstIdx++] = a;
+                        } else {
+                            var rawBytes = new Uint8Array(await response.arrayBuffer());
+                            imageData.data.set(decodeRawImageToRgba(rawBytes.subarray(headerSize), width, height, format));
+                        }
+
+                        if (currentRenderId !== activeRenderId) {
+                            return;
                         }
 
                         ctx.putImageData(imageData, 0, 0);
@@ -773,6 +1046,12 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         root.appendChild(canvas);
                     })
                     .catch(function(err) {
+                        if (err && err.name === 'AbortError') {
+                            return;
+                        }
+                        if (currentRenderId !== activeRenderId) {
+                            return;
+                        }
                         root.className = 'center';
                         root.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + escapeHtml(String(err)) + '</div>';
                     });

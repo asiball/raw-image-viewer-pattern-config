@@ -36,7 +36,10 @@
         "rgb24",
         "bgr24",
         "rgba32",
-        "bgra32"
+        "bgra32",
+        "yuv420p",
+        "nv12",
+        "yuyv422"
       ]
     }
   },

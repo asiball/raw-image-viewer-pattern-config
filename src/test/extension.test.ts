@@ -5,7 +5,12 @@ import * as path from 'path';
 // as well as import your extension to test it
 import * as vscode from 'vscode';
 import {
+	appendRawImageChunk,
+	createInitialRenderHandshake,
+	createRawImageDecodeState,
+	decodeRawImageToRgba,
 	decodePngDataUrl,
+	getBytesPerPixel,
 	getConfigSearchDirectories,
 	getLocalResourceRoots,
 	getSuggestedPngSaveUri,
@@ -58,6 +63,16 @@ suite('Extension Test Suite', () => {
 		);
 	});
 
+	test('parseRawImageConfig accepts supported YUV formats', () => {
+		assert.deepStrictEqual(
+			parseRawImageConfig(
+				JSON.stringify({ width: 4, height: 2, headerSize: 16, format: 'yuv420p' }),
+				'D:\\repo\\.rawimagerc'
+			),
+			{ width: 4, height: 2, headerSize: 16, format: 'yuv420p' }
+		);
+	});
+
 	test('getLocalResourceRoots includes config ancestor', () => {
 		const roots = getLocalResourceRoots(
 			vscode.Uri.file('D:\\repo\\images\\nested\\frame.raw'),
@@ -98,6 +113,13 @@ suite('Extension Test Suite', () => {
 		assert.deepStrictEqual(
 			inferRawImageConfigFromFilename('D:\\repo\\captures\\frame_1920x1080_rgb24.raw'),
 			{ width: 1920, height: 1080, format: 'rgb24' }
+		);
+	});
+
+	test('inferRawImageConfigFromFilename recognizes YUV formats', () => {
+		assert.deepStrictEqual(
+			inferRawImageConfigFromFilename('D:\\repo\\captures\\frame-640x480-yuyv422.yuv'),
+			{ width: 640, height: 480, format: 'yuyv422' }
 		);
 	});
 
@@ -147,5 +169,187 @@ suite('Extension Test Suite', () => {
 
 	test('decodePngDataUrl rejects invalid payloads', () => {
 		assert.throws(() => decodePngDataUrl('not-a-data-url'), /Invalid PNG data/);
+	});
+
+	test('getBytesPerPixel matches supported stream formats', () => {
+		assert.strictEqual(getBytesPerPixel('gray8'), 1);
+		assert.strictEqual(getBytesPerPixel('gray16le'), 2);
+		assert.strictEqual(getBytesPerPixel('gray16be'), 2);
+		assert.strictEqual(getBytesPerPixel('rgb24'), 3);
+		assert.strictEqual(getBytesPerPixel('bgr24'), 3);
+		assert.strictEqual(getBytesPerPixel('rgba32'), 4);
+		assert.strictEqual(getBytesPerPixel('bgra32'), 4);
+	});
+
+	test('appendRawImageChunk skips headers and decodes pixels across chunk boundaries', () => {
+		const pixels = new Uint8ClampedArray(8);
+		const state = createRawImageDecodeState(2, 1, 2, 'rgb24');
+
+		appendRawImageChunk(state, Uint8Array.from([9, 8, 255]), pixels);
+		assert.strictEqual(state.pixelsWritten, 0);
+
+		appendRawImageChunk(state, Uint8Array.from([0, 0, 0, 255, 0]), pixels);
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.deepStrictEqual(Array.from(pixels), [255, 0, 0, 255, 0, 255, 0, 255]);
+	});
+
+	test('appendRawImageChunk decodes gray16 values with split samples', () => {
+		const pixels = new Uint8ClampedArray(8);
+		const state = createRawImageDecodeState(2, 1, 0, 'gray16le');
+
+		appendRawImageChunk(state, Uint8Array.from([0x34]), pixels);
+		assert.strictEqual(state.pixelsWritten, 0);
+
+		appendRawImageChunk(state, Uint8Array.from([0x12, 0xcd, 0xab]), pixels);
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.deepStrictEqual(Array.from(pixels), [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 255]);
+	});
+
+	test('appendRawImageChunk ignores trailing bytes after expected pixels are filled', () => {
+		const pixels = new Uint8ClampedArray(4);
+		const state = createRawImageDecodeState(1, 1, 0, 'rgba32');
+
+		appendRawImageChunk(state, Uint8Array.from([1, 2, 3, 4, 200, 201, 202, 203]), pixels);
+
+		assert.strictEqual(state.pixelsWritten, 1);
+		assert.deepStrictEqual(Array.from(pixels), [1, 2, 3, 4]);
+		assert.strictEqual(state.pendingLength, 0);
+	});
+
+	test('createInitialRenderHandshake clears both timers after ready', () => {
+		type ScheduledTimeout = {
+			callback: () => void;
+			delay: number;
+			cleared: boolean;
+		};
+
+		const scheduled: ScheduledTimeout[] = [];
+		const scheduleTimeout = (callback: () => void, delay: number): ReturnType<typeof setTimeout> => {
+			const handle: ScheduledTimeout = { callback, delay, cleared: false };
+			scheduled.push(handle);
+			return handle as unknown as ReturnType<typeof setTimeout>;
+		};
+		const cancelTimeout = (handle: ReturnType<typeof setTimeout>): void => {
+			(handle as unknown as ScheduledTimeout).cleared = true;
+		};
+		let sendCount = 0;
+		let warningCount = 0;
+
+		const handshake = createInitialRenderHandshake(
+			() => {
+				sendCount += 1;
+			},
+			() => {
+				warningCount += 1;
+			},
+			scheduleTimeout,
+			cancelTimeout
+		);
+
+		assert.strictEqual(handshake.handleMessage('ready'), true);
+		assert.strictEqual(sendCount, 1);
+		assert.strictEqual(warningCount, 0);
+		assert.deepStrictEqual(
+			scheduled.map((timeout) => timeout.delay),
+			[300, 5000]
+		);
+		assert.ok(scheduled.every((timeout) => timeout.cleared));
+	});
+
+	test('createInitialRenderHandshake dispose clears timers without sending', () => {
+		type ScheduledTimeout = {
+			cleared: boolean;
+		};
+
+		const scheduled: ScheduledTimeout[] = [];
+		const scheduleTimeout = (): ReturnType<typeof setTimeout> => {
+			const handle: ScheduledTimeout = { cleared: false };
+			scheduled.push(handle);
+			return handle as unknown as ReturnType<typeof setTimeout>;
+		};
+		const cancelTimeout = (handle: ReturnType<typeof setTimeout>): void => {
+			(handle as unknown as ScheduledTimeout).cleared = true;
+		};
+		let sendCount = 0;
+		let warningCount = 0;
+
+		const handshake = createInitialRenderHandshake(
+			() => {
+				sendCount += 1;
+			},
+			() => {
+				warningCount += 1;
+			},
+			scheduleTimeout,
+			cancelTimeout
+		);
+
+		handshake.dispose();
+
+		assert.strictEqual(sendCount, 0);
+		assert.strictEqual(warningCount, 0);
+		assert.strictEqual(scheduled.length, 2);
+		assert.ok(scheduled.every((timeout) => timeout.cleared));
+	});
+
+	test('decodeRawImageToRgba decodes yuv420p frames', () => {
+		const rgba = decodeRawImageToRgba(
+			new Uint8Array([
+				16, 82,
+				145, 235,
+				128,
+				128,
+			]),
+			2,
+			2,
+			'yuv420p'
+		);
+
+		assert.deepStrictEqual(Array.from(rgba), [
+			0, 0, 0, 255,
+			77, 77, 77, 255,
+			150, 150, 150, 255,
+			255, 255, 255, 255,
+		]);
+	});
+
+	test('decodeRawImageToRgba decodes nv12 frames', () => {
+		const rgba = decodeRawImageToRgba(
+			new Uint8Array([
+				16, 82,
+				145, 235,
+				128, 128,
+			]),
+			2,
+			2,
+			'nv12'
+		);
+
+		assert.deepStrictEqual(Array.from(rgba), [
+			0, 0, 0, 255,
+			77, 77, 77, 255,
+			150, 150, 150, 255,
+			255, 255, 255, 255,
+		]);
+	});
+
+	test('decodeRawImageToRgba decodes yuyv422 frames', () => {
+		const rgba = decodeRawImageToRgba(new Uint8Array([16, 128, 235, 128]), 2, 1, 'yuyv422');
+
+		assert.deepStrictEqual(Array.from(rgba), [
+			0, 0, 0, 255,
+			255, 255, 255, 255,
+		]);
+	});
+
+	test('decodeRawImageToRgba validates YUV frame geometry', () => {
+		assert.throws(
+			() => decodeRawImageToRgba(new Uint8Array([0, 0, 0]), 3, 2, 'yuv420p'),
+			/requires even width and height/
+		);
+		assert.throws(
+			() => decodeRawImageToRgba(new Uint8Array([0, 0, 0, 0]), 3, 1, 'yuyv422'),
+			/requires an even width/
+		);
 	});
 });

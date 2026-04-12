@@ -52,6 +52,11 @@ If `.rawimagerc` is not present, the extension can still render files by combini
 | `bgr24`    | 24-bit BGR                       | 3           |
 | `rgba32`   | 32-bit RGBA                      | 4           |
 | `bgra32`   | 32-bit BGRA                      | 4           |
+| `yuv420p`  | Planar YUV 4:2:0                 | 1.5         |
+| `nv12`     | Semi-planar YUV 4:2:0            | 1.5         |
+| `yuyv422`  | Packed YUV 4:2:2                 | 2           |
+
+For `yuv420p` and `nv12`, use even image widths and heights. `yuyv422` requires an even width.
 
 ## Usage
 
