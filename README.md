@@ -10,6 +10,7 @@ A VS Code extension that displays raw binary image files directly in the editor 
 - Provides schema-backed autocomplete and validation for `.rawimagerc` in VS Code
 - Right-click any file in the Explorer → **Open as Raw Image** to view it with this extension
 - Supports multiple pixel formats
+- Lets you export the rendered canvas as a PNG from the custom editor
 
 ## Configuration: `.rawimagerc`
 
@@ -57,6 +58,7 @@ If `.rawimagerc` is not present, the extension can still render files by combini
 1. Place a `.rawimagerc` file in the directory containing your binary image (or a parent directory).
 2. Open a `.raw`, `.bin`, `.data`, `.img`, `.gray`, or `.yuv` file in VS Code — it will automatically render as an image.
 3. For other file extensions, right-click the file in the Explorer and choose **Open as Raw Image**.
+4. Click **Export PNG** above the canvas to save the current rendering as a `.png` file.
 
 ## Fallback Settings
 

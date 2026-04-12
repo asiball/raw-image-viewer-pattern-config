@@ -139,6 +139,26 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
                 clearTimeout(initialSendTimer);
                 clearTimeout(readyWarningTimer);
                 sendInitialRenderPayload();
+                return;
+            }
+
+            if (message.type === 'savePng') {
+                try {
+                    const targetUri = await vscode.window.showSaveDialog({
+                        defaultUri: getSuggestedPngSaveUri(document.uri),
+                        filters: { 'PNG Image': ['png'] },
+                        saveLabel: 'Export PNG',
+                    });
+                    if (!targetUri) {
+                        return;
+                    }
+
+                    await vscode.workspace.fs.writeFile(targetUri, decodePngDataUrl(message.dataUrl));
+                    void vscode.window.showInformationMessage(`Raw Image Viewer: Exported PNG to ${targetUri.fsPath}`);
+                } catch (err: unknown) {
+                    const detail = err instanceof Error ? err.message : String(err);
+                    void vscode.window.showErrorMessage(`Raw Image Viewer: Failed to export PNG. ${detail}`);
+                }
             }
         });
 
@@ -415,6 +435,24 @@ export function getLocalResourceRoots(documentUri: vscode.Uri, configPath?: stri
     return [...roots.values()];
 }
 
+export function getSuggestedPngSaveUri(documentUri: vscode.Uri): vscode.Uri {
+    const parsed = path.parse(documentUri.fsPath);
+    return vscode.Uri.file(path.join(parsed.dir, `${parsed.name}.png`));
+}
+
+export function decodePngDataUrl(dataUrl: unknown): Uint8Array {
+    if (typeof dataUrl !== 'string') {
+        throw new Error('Missing PNG data.');
+    }
+
+    const match = dataUrl.match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
+    if (!match) {
+        throw new Error('Invalid PNG data received from the webview.');
+    }
+
+    return Uint8Array.from(Buffer.from(match[1], 'base64'));
+}
+
 function getNonce(): string {
     let text = '';
     const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -455,10 +493,31 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
             align-items: center;
             gap: 12px;
         }
+        .viewer-header {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            justify-content: center;
+        }
         .info-bar {
             color: #9cdcfe;
             font-size: 13px;
             font-family: 'Consolas', 'Courier New', monospace;
+        }
+        .action-button {
+            appearance: none;
+            border: 1px solid #1177bb;
+            border-radius: 4px;
+            background: #0e639c;
+            color: #ffffff;
+            cursor: pointer;
+            font-size: 13px;
+            line-height: 1.2;
+            padding: 6px 12px;
+        }
+        .action-button:hover {
+            background: #1177bb;
         }
         .error-box {
             background: #5a1d1d;
@@ -682,6 +741,9 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         root.className = 'viewer';
                         root.innerHTML = '';
 
+                        var viewerHeader = document.createElement('div');
+                        viewerHeader.className = 'viewer-header';
+
                         var infoBar = document.createElement('div');
                         infoBar.className = 'info-bar';
                         infoBar.textContent =
@@ -696,7 +758,18 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             fileSize +
                             ' B | source: ' +
                             (configSource || '.rawimagerc');
-                        root.appendChild(infoBar);
+
+                        var exportButton = document.createElement('button');
+                        exportButton.type = 'button';
+                        exportButton.className = 'action-button';
+                        exportButton.textContent = 'Export PNG';
+                        exportButton.addEventListener('click', function() {
+                            vscode.postMessage({ type: 'savePng', dataUrl: canvas.toDataURL('image/png') });
+                        });
+
+                        viewerHeader.appendChild(infoBar);
+                        viewerHeader.appendChild(exportButton);
+                        root.appendChild(viewerHeader);
                         root.appendChild(canvas);
                     })
                     .catch(function(err) {

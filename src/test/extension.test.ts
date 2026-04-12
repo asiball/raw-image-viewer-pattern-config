@@ -5,8 +5,10 @@ import * as path from 'path';
 // as well as import your extension to test it
 import * as vscode from 'vscode';
 import {
+	decodePngDataUrl,
 	getConfigSearchDirectories,
 	getLocalResourceRoots,
+	getSuggestedPngSaveUri,
 	inferRawImageConfigFromFilename,
 	parseRawImageConfig,
 	resolveFallbackRawImageConfig,
@@ -71,6 +73,13 @@ suite('Extension Test Suite', () => {
 		);
 	});
 
+	test('getSuggestedPngSaveUri swaps the extension for png', () => {
+		assert.strictEqual(
+			path.normalize(getSuggestedPngSaveUri(vscode.Uri.file('D:\\repo\\images\\frame.gray')).fsPath).toLowerCase(),
+			path.normalize('D:\\repo\\images\\frame.png').toLowerCase()
+		);
+	});
+
 	test('getConfigSearchDirectories walks from file directory to root', () => {
 		assert.deepStrictEqual(
 			getConfigSearchDirectories('D:\\repo\\images\\nested\\frame.raw').map((dir) =>
@@ -129,4 +138,14 @@ suite('Extension Test Suite', () => {
 		);
 	});
 
+	test('decodePngDataUrl decodes PNG payloads', () => {
+		assert.deepStrictEqual(
+			Array.from(decodePngDataUrl('data:image/png;base64,AQID')),
+			[1, 2, 3]
+		);
+	});
+
+	test('decodePngDataUrl rejects invalid payloads', () => {
+		assert.throws(() => decodePngDataUrl('not-a-data-url'), /Invalid PNG data/);
+	});
 });
