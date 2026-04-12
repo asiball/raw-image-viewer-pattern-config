@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Raw Image Viewer configuration",
+  "description": "Configuration for rendering raw binary image files with the Raw Image Viewer VS Code extension.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "width",
+    "height"
+  ],
+  "properties": {
+    "width": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Image width in pixels."
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Image height in pixels."
+    },
+    "headerSize": {
+      "type": "integer",
+      "minimum": 0,
+      "default": 0,
+      "description": "Number of bytes to skip at the start of the file."
+    },
+    "format": {
+      "type": "string",
+      "default": "rgb24",
+      "description": "Pixel format used to interpret the binary image data.",
+      "enum": [
+        "gray8",
+        "gray16le",
+        "gray16be",
+        "rgb24",
+        "bgr24",
+        "rgba32",
+        "bgra32",
+        "yuv420p",
+        "nv12",
+        "yuyv422"
+      ]
+    }
+  },
+  "examples": [
+    {
+      "width": 640,
+      "height": 480,
+      "headerSize": 0,
+      "format": "rgb24"
+    }
+  ]
+}

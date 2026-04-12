@@ -10,6 +10,8 @@ assignees: ""
 
 <!-- 追加したい機能を説明してください -->
 
+> AIエージェントがこの Issue を作成する場合は、`priority: critical` / `priority: high` / `priority: medium` / `priority: low` のいずれか **1つ** を必ず付けてください。
+
 ## 動機・背景
 
 <!-- なぜこの機能が必要か -->

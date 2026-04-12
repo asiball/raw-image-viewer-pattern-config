@@ -44,4 +44,19 @@ PR title prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`
 
 Direct pushes to `main` are not allowed. CI runs `npm run lint` and `npm run compile` on all PRs and pushes.
 
+**If you modify code, create a local branch before making or finalizing the change.** Use the branch prefixes above, and use `copilot/` for AI-agent work.
+
+**Do not stop at local code changes.** If an AI agent changed code, it must continue through the normal flow: local branch -> commit(s) -> push branch -> open a Pull Request targeting `main`.
+
 **After pushing a branch, always open a Pull Request targeting `main`.** Include a clear description of what was changed and why. Follow the PR template checklist in `.github/PULL_REQUEST_TEMPLATE.md`.
+
+## Issue Priority Conventions
+
+When creating or triaging an issue, always assign exactly one priority label:
+
+- `priority: critical`
+- `priority: high`
+- `priority: medium`
+- `priority: low`
+
+AI agents must add one of these priority labels when they create a new issue. Do not leave AI-created issues without a priority label.
