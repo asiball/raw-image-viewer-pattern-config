@@ -1068,13 +1068,15 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
             showRuntimeError(event.reason || 'Unhandled promise rejection');
         });
 
-        // Retry ready handshake in case startup timing drops the first message.
+        // Send 'ready' on an interval until the extension acknowledges it, in case
+        // the first message is dropped due to startup timing.
         readyTimer = setInterval(function() {
             vscode.postMessage({ type: 'ready' });
         }, 250);
         vscode.postMessage({ type: 'ready' });
 
-        // Surface a visible diagnostic instead of infinite loading.
+        // Show a visible error instead of spinning forever if the extension host
+        // never sends a 'render' message.
         startupTimeout = setTimeout(function() {
             var root = document.getElementById('root');
             if (!root) {
