@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
 import * as path from 'path';
 
 // You can import and use all API from the 'vscode' module
@@ -17,6 +18,7 @@ import {
 	inferRawImageConfigFromFilename,
 	parseRawImageConfig,
 	resolveFallbackRawImageConfig,
+	supportedFormats,
 } from '../extension';
 
 suite('Extension Test Suite', () => {
@@ -350,6 +352,20 @@ suite('Extension Test Suite', () => {
 		assert.throws(
 			() => decodeRawImageToRgba(new Uint8Array([0, 0, 0, 0]), 3, 1, 'yuyv422'),
 			/requires an even width/
+		);
+	});
+
+	test('rawimagerc.schema.json format enum matches extension supported formats', () => {
+		const schemaPath = path.join(__dirname, '..', '..', 'schemas', 'rawimagerc.schema.json');
+		const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8')) as {
+			properties: { format: { enum: string[]; enumDescriptions: string[] } };
+		};
+		const schemaFormats: string[] = schema.properties.format.enum;
+		assert.deepStrictEqual(schemaFormats, [...supportedFormats]);
+		assert.strictEqual(
+			schema.properties.format.enumDescriptions.length,
+			schemaFormats.length,
+			'enumDescriptions count must match enum count'
 		);
 	});
 });

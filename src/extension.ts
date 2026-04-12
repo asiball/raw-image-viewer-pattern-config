@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const streamDecodableFormats = ['gray8', 'gray16le', 'gray16be', 'rgb24', 'bgr24', 'rgba32', 'bgra32'] as const;
-const supportedFormats = [...streamDecodableFormats, 'yuv420p', 'nv12', 'yuyv422'] as const;
+export const supportedFormats = [...streamDecodableFormats, 'yuv420p', 'nv12', 'yuyv422'] as const;
 
 type StreamDecodableRawImageFormat = (typeof streamDecodableFormats)[number];
 type RawImageFormat = (typeof supportedFormats)[number];
