@@ -6,12 +6,23 @@ A VS Code extension that displays raw binary image files directly in the editor 
 
 - Opens raw binary image files (`.raw`, `.bin`, `.data`, `.img`, `.gray`, `.yuv`) as images
 - Configurable via a `.rawimagerc` file (searched from the file's directory up to the filesystem root, similar to `.editorconfig`)
+- Falls back to workspace settings and filename hints when `.rawimagerc` is missing
+- Provides schema-backed autocomplete and validation for `.rawimagerc` in VS Code
 - Right-click any file in the Explorer → **Open as Raw Image** to view it with this extension
 - Supports multiple pixel formats
 
 ## Configuration: `.rawimagerc`
 
 Create a `.rawimagerc` file in the same directory as your binary file, or any parent directory. The nearest file found wins.
+
+The extension contributes a JSON schema for `.rawimagerc`, so VS Code can offer autocomplete and validation for the supported fields and pixel formats.
+
+If `.rawimagerc` is not present, the extension can still render files by combining:
+
+1. Filename inference from patterns like `frame_1920x1080_rgb24.raw`
+2. Workspace settings such as `rawviewer.defaultWidth`, `rawviewer.defaultHeight`, `rawviewer.defaultHeaderSize`, and `rawviewer.defaultFormat`
+
+`.rawimagerc` always takes precedence over these fallbacks.
 
 ```json
 {
@@ -22,12 +33,12 @@ Create a `.rawimagerc` file in the same directory as your binary file, or any pa
 }
 ```
 
-| Field        | Type   | Default  | Description                                  |
-|--------------|--------|----------|----------------------------------------------|
-| `width`      | number | required | Image width in pixels                        |
-| `height`     | number | required | Image height in pixels                       |
-| `headerSize` | number | `0`      | Number of bytes to skip at the start of file |
-| `format`     | string | `"rgb24"`| Pixel format (see table below)               |
+| Field        | Type      | Default  | Description                                  |
+|--------------|-----------|----------|----------------------------------------------|
+| `width`      | integer   | required | Image width in pixels                        |
+| `height`     | integer   | required | Image height in pixels                       |
+| `headerSize` | integer   | `0`      | Number of bytes to skip at the start of file |
+| `format`     | enum      | `"rgb24"`| Pixel format (see table below)               |
 
 ### Supported Pixel Formats
 
@@ -47,6 +58,22 @@ Create a `.rawimagerc` file in the same directory as your binary file, or any pa
 2. Open a `.raw`, `.bin`, `.data`, `.img`, `.gray`, or `.yuv` file in VS Code — it will automatically render as an image.
 3. For other file extensions, right-click the file in the Explorer and choose **Open as Raw Image**.
 
+## Fallback Settings
+
+Add these workspace settings if you want a project-wide fallback when `.rawimagerc` is absent:
+
+```json
+{
+  "rawviewer.defaultWidth": 1920,
+  "rawviewer.defaultHeight": 1080,
+  "rawviewer.defaultHeaderSize": 0,
+  "rawviewer.defaultFormat": "rgb24",
+  "rawviewer.inferFromFilename": true
+}
+```
+
+With `rawviewer.inferFromFilename` enabled, a file named `capture_1280x720_gray8.raw` can supply width, height, and format automatically. Any missing pieces are filled from the workspace defaults above.
+
 ## Example
 
 Suppose you have a 320×240 8-bit grayscale image at `/project/images/frame.raw` with no header. Create `/project/images/.rawimagerc`:
@@ -61,4 +88,3 @@ Suppose you have a 320×240 8-bit grayscale image at `/project/images/frame.raw`
 ```
 
 Open `frame.raw` in VS Code and the image will be displayed on a canvas.
-

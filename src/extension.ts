@@ -2,11 +2,37 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 
+const supportedFormats = [
+    'gray8',
+    'gray16le',
+    'gray16be',
+    'rgb24',
+    'bgr24',
+    'rgba32',
+    'bgra32',
+] as const;
+
+type RawImageFormat = (typeof supportedFormats)[number];
+type RawImageConfigSource = 'rawimagerc' | 'filename' | 'settings' | 'filename+settings';
+
 interface RawImageConfig {
     width: number;
     height: number;
-    headerSize?: number;
-    format?: string;
+    headerSize: number;
+    format: RawImageFormat;
+}
+
+interface RawImageFallbackSettings {
+    defaultWidth?: number;
+    defaultHeight?: number;
+    defaultHeaderSize?: number;
+    defaultFormat?: RawImageFormat;
+    inferFromFilename?: boolean;
+}
+
+interface ResolvedRawImageConfig {
+    config: RawImageConfig | null;
+    source?: RawImageConfigSource;
 }
 
 class RawImageDocument implements vscode.CustomDocument {
@@ -39,33 +65,67 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
         webviewPanel: vscode.WebviewPanel,
         _token: vscode.CancellationToken
     ): Promise<void> {
-        webviewPanel.webview.options = {
-            enableScripts: true,
-            localResourceRoots: [vscode.Uri.file(path.dirname(document.uri.fsPath))],
+        let currentConfigPath = findConfigPath(document.uri.fsPath);
+        const updateWebviewOptions = (): void => {
+            webviewPanel.webview.options = {
+                enableScripts: true,
+                localResourceRoots: getLocalResourceRoots(document.uri, currentConfigPath),
+            };
         };
 
-        const sendRenderPayload = (): void => {
+        updateWebviewOptions();
+
+        let initialPayloadSent = false;
+        let refreshTimer: NodeJS.Timeout | undefined;
+        const postRenderPayload = (): void => {
+            currentConfigPath = findConfigPath(document.uri.fsPath);
+            updateWebviewOptions();
             try {
-                const config = findConfig(document.uri.fsPath);
+                const resolvedConfig = currentConfigPath
+                    ? { config: loadRawImageConfig(currentConfigPath), source: 'rawimagerc' as const }
+                    : resolveFallbackRawImageConfig(
+                          document.uri.fsPath,
+                          getRawImageFallbackSettings(vscode.workspace.getConfiguration('rawviewer', document.uri))
+                      );
                 const fileStat = fs.statSync(document.uri.fsPath);
                 const fileUri = webviewPanel.webview.asWebviewUri(document.uri).toString();
                 webviewPanel.webview.postMessage({
                     type: 'render',
-                    config,
+                    config: resolvedConfig.config,
+                    configSource: resolvedConfig.source ?? null,
                     fileUri,
                     fileSize: fileStat.size,
                 });
             } catch (err: unknown) {
                 webviewPanel.webview.postMessage({
                     type: 'error',
-                    message: String(err),
+                    message: err instanceof Error ? err.message : String(err),
                 });
             }
+        };
+        const sendInitialRenderPayload = (): void => {
+            if (initialPayloadSent) {
+                return;
+            }
+            initialPayloadSent = true;
+            postRenderPayload();
+        };
+        const scheduleRefresh = (): void => {
+            if (!initialPayloadSent) {
+                return;
+            }
+            if (refreshTimer) {
+                clearTimeout(refreshTimer);
+            }
+            refreshTimer = setTimeout(() => {
+                refreshTimer = undefined;
+                postRenderPayload();
+            }, 100);
         };
 
         // Send once even if ready handshake fails, to prevent permanent loading.
         const initialSendTimer = setTimeout(() => {
-            sendRenderPayload();
+            sendInitialRenderPayload();
         }, 300);
 
         const readyWarningTimer = setTimeout(() => {
@@ -75,12 +135,30 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
         }, 5000);
 
         const listener = webviewPanel.webview.onDidReceiveMessage(async (message) => {
-            if (message.type !== 'ready') {
-                return;
+            if (message.type === 'ready') {
+                clearTimeout(initialSendTimer);
+                clearTimeout(readyWarningTimer);
+                sendInitialRenderPayload();
             }
-            clearTimeout(readyWarningTimer);
-            sendRenderPayload();
         });
+
+        const panelDisposables: vscode.Disposable[] = [listener];
+        const registerRefreshListeners = (watcher: vscode.FileSystemWatcher): void => {
+            panelDisposables.push(watcher);
+            panelDisposables.push(watcher.onDidChange(scheduleRefresh));
+            panelDisposables.push(watcher.onDidCreate(scheduleRefresh));
+            panelDisposables.push(watcher.onDidDelete(scheduleRefresh));
+        };
+
+        registerRefreshListeners(
+            vscode.workspace.createFileSystemWatcher(
+                new vscode.RelativePattern(path.dirname(document.uri.fsPath), path.basename(document.uri.fsPath))
+            )
+        );
+
+        for (const dir of getConfigSearchDirectories(document.uri.fsPath)) {
+            registerRefreshListeners(vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(dir, '.rawimagerc')));
+        }
 
         const nonce = getNonce();
         webviewPanel.webview.html = getWebviewHtml(nonce, webviewPanel.webview.cspSource);
@@ -88,31 +166,253 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
         webviewPanel.onDidDispose(() => {
             clearTimeout(initialSendTimer);
             clearTimeout(readyWarningTimer);
-            listener.dispose();
+            if (refreshTimer) {
+                clearTimeout(refreshTimer);
+            }
+            vscode.Disposable.from(...panelDisposables).dispose();
         });
     }
 }
 
-function findConfig(filePath: string): RawImageConfig | null {
+export function getConfigSearchDirectories(filePath: string): string[] {
+    const directories: string[] = [];
     let dir = path.dirname(filePath);
     while (true) {
-        const configPath = path.join(dir, '.rawimagerc');
-        try {
-            const content = fs.readFileSync(configPath, 'utf8');
-            return JSON.parse(content) as RawImageConfig;
-        } catch (err: unknown) {
-            const nodeErr = err as NodeJS.ErrnoException;
-            if (nodeErr.code !== 'ENOENT') {
-                throw err;
-            }
-        }
+        directories.push(dir);
         const parent = path.dirname(dir);
         if (parent === dir) {
             break;
         }
         dir = parent;
     }
-    return null;
+    return directories;
+}
+
+export function findConfigPath(filePath: string): string | undefined {
+    for (const dir of getConfigSearchDirectories(filePath)) {
+        const configPath = path.join(dir, '.rawimagerc');
+        try {
+            fs.accessSync(configPath, fs.constants.F_OK);
+            return configPath;
+        } catch (err: unknown) {
+            const nodeErr = err as NodeJS.ErrnoException;
+            if (nodeErr.code !== 'ENOENT') {
+                throw err;
+            }
+        }
+    }
+    return undefined;
+}
+
+function isRawImageConfigRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validatePositiveInteger(value: unknown, property: 'width' | 'height', configPath: string): number {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+        throw new Error(`Invalid .rawimagerc at "${configPath}": "${property}" must be a positive integer.`);
+    }
+    return value;
+}
+
+function validateNonNegativeInteger(value: unknown, property: 'headerSize', configPath: string): number {
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        throw new Error(`Invalid .rawimagerc at "${configPath}": "${property}" must be a non-negative integer.`);
+    }
+    return value;
+}
+
+function validateOptionalPositiveInteger(
+    value: unknown,
+    property: 'defaultWidth' | 'defaultHeight',
+    source: string
+): number | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+        throw new Error(`Invalid ${source}: "${property}" must be a positive integer.`);
+    }
+    return value;
+}
+
+function validateOptionalNonNegativeInteger(value: unknown, property: 'defaultHeaderSize', source: string): number | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        throw new Error(`Invalid ${source}: "${property}" must be a non-negative integer.`);
+    }
+    return value;
+}
+
+function validateOptionalFormat(value: unknown, property: 'defaultFormat', source: string): RawImageFormat | undefined {
+    if (value === undefined) {
+        return undefined;
+    }
+    if (typeof value !== 'string' || !supportedFormats.includes(value as RawImageFormat)) {
+        throw new Error(`Invalid ${source}: "${property}" must be one of ${supportedFormats.join(', ')}.`);
+    }
+    return value as RawImageFormat;
+}
+
+export function parseRawImageConfig(content: string, configPath: string): RawImageConfig {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(content);
+    } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Failed to parse .rawimagerc at "${configPath}": ${message}`);
+    }
+
+    if (!isRawImageConfigRecord(parsed)) {
+        throw new Error(`Invalid .rawimagerc at "${configPath}": expected a JSON object.`);
+    }
+
+    const width = validatePositiveInteger(parsed.width, 'width', configPath);
+    const height = validatePositiveInteger(parsed.height, 'height', configPath);
+    const headerSize = validateNonNegativeInteger(parsed.headerSize ?? 0, 'headerSize', configPath);
+    const format = parsed.format ?? 'rgb24';
+
+    if (typeof format !== 'string' || !supportedFormats.includes(format as RawImageFormat)) {
+        throw new Error(
+            `Invalid .rawimagerc at "${configPath}": "format" must be one of ${supportedFormats.join(', ')}.`
+        );
+    }
+
+    return {
+        width,
+        height,
+        headerSize,
+        format: format as RawImageFormat,
+    };
+}
+
+function loadRawImageConfig(configPath: string): RawImageConfig {
+    return parseRawImageConfig(fs.readFileSync(configPath, 'utf8'), configPath);
+}
+
+function escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function inferRawImageConfigFromFilename(filePath: string): Partial<RawImageConfig> | null {
+    const baseName = path.parse(filePath).name.toLowerCase();
+    const sizeMatch = baseName.match(/(?:^|[^0-9])(\d+)x(\d+)(?:[^0-9]|$)/);
+    const width = sizeMatch ? Number.parseInt(sizeMatch[1], 10) : undefined;
+    const height = sizeMatch ? Number.parseInt(sizeMatch[2], 10) : undefined;
+    const format = supportedFormats.find((candidate) =>
+        new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(candidate)}(?:[^a-z0-9]|$)`).test(baseName)
+    );
+
+    if (width === undefined && height === undefined && format === undefined) {
+        return null;
+    }
+
+    const inferred: Partial<RawImageConfig> = {};
+    if (width !== undefined && Number.isInteger(width) && width > 0) {
+        inferred.width = width;
+    }
+    if (height !== undefined && Number.isInteger(height) && height > 0) {
+        inferred.height = height;
+    }
+    if (format) {
+        inferred.format = format;
+    }
+
+    return Object.keys(inferred).length > 0 ? inferred : null;
+}
+
+function getRawImageFallbackSettings(configuration: vscode.WorkspaceConfiguration): RawImageFallbackSettings {
+    const getConfiguredValue = <T>(key: string): T | undefined => {
+        const inspected = configuration.inspect<T>(key);
+        return (
+            inspected?.workspaceFolderLanguageValue ??
+            inspected?.workspaceFolderValue ??
+            inspected?.workspaceLanguageValue ??
+            inspected?.workspaceValue ??
+            inspected?.globalLanguageValue ??
+            inspected?.globalValue
+        );
+    };
+
+    const defaultWidth = getConfiguredValue<number>('defaultWidth');
+    const defaultHeight = getConfiguredValue<number>('defaultHeight');
+    const defaultHeaderSize = getConfiguredValue<number>('defaultHeaderSize');
+    const defaultFormat = getConfiguredValue<string>('defaultFormat');
+
+    return {
+        defaultWidth: validateOptionalPositiveInteger(defaultWidth, 'defaultWidth', 'rawviewer settings'),
+        defaultHeight: validateOptionalPositiveInteger(defaultHeight, 'defaultHeight', 'rawviewer settings'),
+        defaultHeaderSize: validateOptionalNonNegativeInteger(defaultHeaderSize, 'defaultHeaderSize', 'rawviewer settings'),
+        defaultFormat: validateOptionalFormat(defaultFormat, 'defaultFormat', 'rawviewer settings'),
+        inferFromFilename: configuration.get<boolean>('inferFromFilename', true),
+    };
+}
+
+export function resolveFallbackRawImageConfig(
+    filePath: string,
+    settings: RawImageFallbackSettings = {}
+): ResolvedRawImageConfig {
+    const validatedSettings: RawImageFallbackSettings = {
+        defaultWidth: validateOptionalPositiveInteger(settings.defaultWidth, 'defaultWidth', 'rawviewer fallback settings'),
+        defaultHeight: validateOptionalPositiveInteger(settings.defaultHeight, 'defaultHeight', 'rawviewer fallback settings'),
+        defaultHeaderSize: validateOptionalNonNegativeInteger(
+            settings.defaultHeaderSize,
+            'defaultHeaderSize',
+            'rawviewer fallback settings'
+        ),
+        defaultFormat: validateOptionalFormat(settings.defaultFormat, 'defaultFormat', 'rawviewer fallback settings'),
+        inferFromFilename: settings.inferFromFilename ?? true,
+    };
+
+    const inferred = validatedSettings.inferFromFilename ? inferRawImageConfigFromFilename(filePath) : null;
+    const width = inferred?.width ?? validatedSettings.defaultWidth;
+    const height = inferred?.height ?? validatedSettings.defaultHeight;
+
+    if (width === undefined || height === undefined) {
+        return { config: null };
+    }
+
+    const usedInference = inferred !== null && (inferred.width !== undefined || inferred.height !== undefined || inferred.format !== undefined);
+    const usedSettings =
+        validatedSettings.defaultWidth !== undefined ||
+        validatedSettings.defaultHeight !== undefined ||
+        validatedSettings.defaultHeaderSize !== undefined ||
+        validatedSettings.defaultFormat !== undefined;
+
+    let source: RawImageConfigSource = 'settings';
+    if (usedInference && usedSettings) {
+        source = 'filename+settings';
+    } else if (usedInference) {
+        source = 'filename';
+    }
+
+    return {
+        config: {
+            width,
+            height,
+            headerSize: inferred?.headerSize ?? validatedSettings.defaultHeaderSize ?? 0,
+            format: inferred?.format ?? validatedSettings.defaultFormat ?? 'rgb24',
+        },
+        source,
+    };
+}
+
+export function getLocalResourceRoots(documentUri: vscode.Uri, configPath?: string): vscode.Uri[] {
+    const roots = new Map<string, vscode.Uri>();
+    const addRoot = (fsPath: string): void => {
+        const uri = vscode.Uri.file(fsPath);
+        const key = process.platform === 'win32' ? uri.fsPath.toLowerCase() : uri.fsPath;
+        roots.set(key, uri);
+    };
+
+    addRoot(path.dirname(documentUri.fsPath));
+    if (configPath) {
+        addRoot(path.dirname(configPath));
+    }
+
+    return [...roots.values()];
 }
 
 function getNonce(): string {
@@ -263,6 +563,7 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
             if (msg.type === 'render') {
                 clearReadyTimer();
                 var config = msg.config;
+                var configSource = msg.configSource;
                 var fileUri = msg.fileUri;
                 var fileSize = msg.fileSize;
 
@@ -272,6 +573,7 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         '<div class="no-config-box">' +
                         '<h3>\u2699 No .rawimagerc configuration found</h3>' +
                         '<p>Create a <code>.rawimagerc</code> file in the same directory as the file, or any parent directory, to configure how to render this binary file as an image.</p>' +
+                        '<p>Alternatively, set workspace defaults such as <code>rawviewer.defaultWidth</code> and <code>rawviewer.defaultHeight</code>, or include metadata in the filename like <code>frame_1920x1080_rgb24.raw</code>.</p>' +
                         '<pre>{\\n  "width": 640,\\n  "height": 480,\\n  "headerSize": 0,\\n  "format": "rgb24"\\n}</pre>' +
                         '<p>Supported formats:</p>' +
                         '<table>' +
@@ -332,15 +634,15 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                                     r = g = b = pixelData[srcIdx++] || 0;
                                     break;
                                 case 'gray16le': {
-                                    var lowByte = pixelData[srcIdx++] || 0;
-                                    var highByte = pixelData[srcIdx++] || 0;
+                                    const lowByte = pixelData[srcIdx++] || 0;
+                                    const highByte = pixelData[srcIdx++] || 0;
                                     r = g = b = ((highByte << 8) | lowByte) >> 8;
                                     break;
                                 }
                                 case 'gray16be': {
-                                    var highByte2 = pixelData[srcIdx++] || 0;
-                                    var lowByte2 = pixelData[srcIdx++] || 0;
-                                    r = g = b = ((highByte2 << 8) | lowByte2) >> 8;
+                                    const highByte = pixelData[srcIdx++] || 0;
+                                    const lowByte = pixelData[srcIdx++] || 0;
+                                    r = g = b = ((highByte << 8) | lowByte) >> 8;
                                     break;
                                 }
                                 case 'rgb24':
@@ -382,8 +684,18 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
 
                         var infoBar = document.createElement('div');
                         infoBar.className = 'info-bar';
-                        infoBar.textContent = width + ' \xd7 ' + height + ' | ' + format + ' | header: ' + headerSize + ' B | file: ' + fileSize + ' B';
-
+                        infoBar.textContent =
+                            width +
+                            ' \xd7 ' +
+                            height +
+                            ' | ' +
+                            format +
+                            ' | header: ' +
+                            headerSize +
+                            ' B | file: ' +
+                            fileSize +
+                            ' B | source: ' +
+                            (configSource || '.rawimagerc');
                         root.appendChild(infoBar);
                         root.appendChild(canvas);
                     })

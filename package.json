@@ -50,6 +50,57 @@
           "command": "rawviewer.openAsRawImage"
         }
       ]
+    },
+    "jsonValidation": [
+      {
+        "fileMatch": ".rawimagerc",
+        "url": "./schemas/rawimagerc.schema.json"
+      }
+    ],
+    "configuration": {
+      "title": "Raw Image Viewer",
+      "properties": {
+        "rawviewer.defaultWidth": {
+          "type": "integer",
+          "minimum": 1,
+          "markdownDescription": "Fallback image width in pixels when `.rawimagerc` is missing.",
+          "scope": "resource"
+        },
+        "rawviewer.defaultHeight": {
+          "type": "integer",
+          "minimum": 1,
+          "markdownDescription": "Fallback image height in pixels when `.rawimagerc` is missing.",
+          "scope": "resource"
+        },
+        "rawviewer.defaultHeaderSize": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "markdownDescription": "Fallback number of bytes to skip at the start of the file when `.rawimagerc` is missing.",
+          "scope": "resource"
+        },
+        "rawviewer.defaultFormat": {
+          "type": "string",
+          "enum": [
+            "gray8",
+            "gray16le",
+            "gray16be",
+            "rgb24",
+            "bgr24",
+            "rgba32",
+            "bgra32"
+          ],
+          "default": "rgb24",
+          "markdownDescription": "Fallback pixel format when `.rawimagerc` is missing.",
+          "scope": "resource"
+        },
+        "rawviewer.inferFromFilename": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Infer width, height, and format from filenames like `frame_1920x1080_rgb24.raw` when `.rawimagerc` is missing.",
+          "scope": "resource"
+        }
+      }
     }
   },
   "scripts": {
