@@ -18,6 +18,7 @@ import {
 	inferRawImageConfigFromFilename,
 	parseRawImageConfig,
 	resolveFallbackRawImageConfig,
+	supportedFormats,
 } from '../extension';
 
 suite('Extension Test Suite', () => {
@@ -360,8 +361,7 @@ suite('Extension Test Suite', () => {
 			properties: { format: { enum: string[]; enumDescriptions: string[] } };
 		};
 		const schemaFormats: string[] = schema.properties.format.enum;
-		const expectedFormats = ['gray8', 'gray16le', 'gray16be', 'rgb24', 'bgr24', 'rgba32', 'bgra32', 'yuv420p', 'nv12', 'yuyv422'];
-		assert.deepStrictEqual([...schemaFormats].sort(), [...expectedFormats].sort());
+		assert.deepStrictEqual(schemaFormats, [...supportedFormats]);
 		assert.strictEqual(
 			schema.properties.format.enumDescriptions.length,
 			schemaFormats.length,
