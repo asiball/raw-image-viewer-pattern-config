@@ -1,0 +1,51 @@
+name: Build VSIX
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'copilot/**'
+      - 'docs/**'
+      - 'feature/**'
+      - 'fix/**'
+      - 'refactor/**'
+  pull_request:
+
+jobs:
+  build-vsix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Package extension
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          npx --yes @vscode/vsce package --no-yarn --out "rawviewer-${version}.vsix"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rawviewer-vsix
+          path: rawviewer-*.vsix
+          if-no-files-found: error
