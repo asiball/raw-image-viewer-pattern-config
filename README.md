@@ -65,13 +65,26 @@ For `yuv420p` and `nv12`, use even image widths and heights. `yuyv422` requires 
 3. For other file extensions, right-click the file in the Explorer and choose **Open as Raw Image**.
 4. Click **Export PNG** above the canvas to save the current rendering as a `.png` file.
 
-## Build a `.vsix` with GitHub Actions
+## GitHub Actions Workflows
 
-This repository includes a GitHub Actions workflow that packages the extension into a `.vsix` file and uploads it as a build artifact. It does not publish anything to the Visual Studio Marketplace.
+### Build VSIX (artifact)
 
-1. Push your branch to GitHub, or run the **Build VSIX** workflow manually from the **Actions** tab.
+Every push and pull request runs the **Build VSIX** workflow, which packages the extension and uploads a `rawviewer-vsix` artifact. This does not publish anything to the Visual Studio Marketplace.
+
+1. Push your branch to GitHub, or trigger the workflow manually from the **Actions** tab.
 2. Download the `rawviewer-vsix` artifact from the workflow run.
-3. On the other computer, install it in VS Code with **Extensions: Install from VSIX...**.
+3. Install it in VS Code with **Extensions: Install from VSIX...**.
+
+### GitHub Releases (automated)
+
+Pushing a `v*` tag to `main` triggers the **Release** workflow, which builds the `.vsix`, creates a GitHub Release, and attaches the file as a release asset.
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Download any release from the [Releases](../../releases) page and install with **Extensions: Install from VSIX...**.
 
 ## Fallback Settings
 
