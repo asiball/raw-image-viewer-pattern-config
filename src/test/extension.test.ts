@@ -6,7 +6,10 @@ import * as path from 'path';
 // as well as import your extension to test it
 import * as vscode from 'vscode';
 import {
+	appendGrayChunk,
 	appendRawImageChunk,
+	applyWindowLevel,
+	createGrayDecodeState,
 	createInitialRenderHandshake,
 	createRawImageDecodeState,
 	decodeRawImageToRgba,
@@ -216,6 +219,82 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(state.pixelsWritten, 1);
 		assert.deepStrictEqual(Array.from(pixels), [1, 2, 3, 4]);
 		assert.strictEqual(state.pendingLength, 0);
+	});
+
+	test('createGrayDecodeState initialises state correctly', () => {
+		const state = createGrayDecodeState(4, 2, 0, 'gray8');
+		assert.strictEqual(state.totalPixels, 8);
+		assert.strictEqual(state.bytesPerPixel, 1);
+		assert.strictEqual(state.maxValue, 255);
+		assert.strictEqual(state.pixelsWritten, 0);
+
+		const state16 = createGrayDecodeState(2, 1, 0, 'gray16le');
+		assert.strictEqual(state16.bytesPerPixel, 2);
+		assert.strictEqual(state16.maxValue, 65535);
+	});
+
+	test('appendGrayChunk decodes gray8 and tracks auto min/max', () => {
+		const state = createGrayDecodeState(3, 1, 0, 'gray8');
+		appendGrayChunk(state, Uint8Array.from([10, 200, 100]));
+		assert.strictEqual(state.pixelsWritten, 3);
+		assert.deepStrictEqual(Array.from(state.rawGray), [10, 200, 100]);
+		assert.strictEqual(state.autoMin, 10);
+		assert.strictEqual(state.autoMax, 200);
+	});
+
+	test('appendGrayChunk decodes gray16le across chunk boundaries', () => {
+		const state = createGrayDecodeState(2, 1, 0, 'gray16le');
+		appendGrayChunk(state, Uint8Array.from([0x34]));
+		assert.strictEqual(state.pixelsWritten, 0);
+		assert.strictEqual(state.hasPendingByte, true);
+
+		appendGrayChunk(state, Uint8Array.from([0x12, 0xcd, 0xab]));
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.deepStrictEqual(Array.from(state.rawGray), [0x1234, 0xabcd]);
+		assert.strictEqual(state.autoMin, 0x1234);
+		assert.strictEqual(state.autoMax, 0xabcd);
+	});
+
+	test('appendGrayChunk decodes gray16be', () => {
+		const state = createGrayDecodeState(1, 1, 0, 'gray16be');
+		appendGrayChunk(state, Uint8Array.from([0x12, 0x34]));
+		assert.strictEqual(state.pixelsWritten, 1);
+		assert.strictEqual(state.rawGray[0], 0x1234);
+	});
+
+	test('appendGrayChunk skips header bytes', () => {
+		const state = createGrayDecodeState(2, 1, 2, 'gray8');
+		appendGrayChunk(state, Uint8Array.from([0xff, 0xff, 50, 100]));
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.deepStrictEqual(Array.from(state.rawGray), [50, 100]);
+	});
+
+	test('applyWindowLevel maps values correctly', () => {
+		const rawGray = new Uint16Array([0, 500, 1000]);
+		const pixels = new Uint8ClampedArray(12);
+		applyWindowLevel(rawGray, 3, 0, 1000, pixels);
+		assert.strictEqual(pixels[0], 0);
+		assert.strictEqual(pixels[4], 128);
+		assert.strictEqual(pixels[8], 255);
+		// alpha channels
+		assert.strictEqual(pixels[3], 255);
+		assert.strictEqual(pixels[7], 255);
+		assert.strictEqual(pixels[11], 255);
+	});
+
+	test('applyWindowLevel clamps out-of-range values', () => {
+		const rawGray = new Uint16Array([50, 200]);
+		const pixels = new Uint8ClampedArray(8);
+		applyWindowLevel(rawGray, 2, 100, 150, pixels);
+		assert.strictEqual(pixels[0], 0);    // 50 < min → clamped to 0
+		assert.strictEqual(pixels[4], 255);  // 200 > max → clamped to 255
+	});
+
+	test('applyWindowLevel uses 128 when range is zero', () => {
+		const rawGray = new Uint16Array([42]);
+		const pixels = new Uint8ClampedArray(4);
+		applyWindowLevel(rawGray, 1, 100, 100, pixels);
+		assert.strictEqual(pixels[0], 128);
 	});
 
 	test('createInitialRenderHandshake clears both timers after ready', () => {

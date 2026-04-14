@@ -166,6 +166,117 @@ export function appendRawImageChunk(
     }
 }
 
+type GrayscaleStreamFormat = 'gray8' | 'gray16le' | 'gray16be';
+
+interface GrayDecodeState {
+    format: GrayscaleStreamFormat;
+    totalPixels: number;
+    pixelsWritten: number;
+    remainingHeaderBytes: number;
+    bytesPerPixel: number;
+    pendingByte: number;
+    hasPendingByte: boolean;
+    rawGray: Uint16Array;
+    autoMin: number;
+    autoMax: number;
+    maxValue: number;
+}
+
+export function createGrayDecodeState(
+    width: number,
+    height: number,
+    headerSize: number,
+    format: GrayscaleStreamFormat
+): GrayDecodeState {
+    const totalPixels = width * height;
+    const bytesPerPixel = format === 'gray8' ? 1 : 2;
+    const maxValue = format === 'gray8' ? 255 : 65535;
+    return {
+        format,
+        totalPixels,
+        pixelsWritten: 0,
+        remainingHeaderBytes: Math.max(0, headerSize),
+        bytesPerPixel,
+        pendingByte: 0,
+        hasPendingByte: false,
+        rawGray: new Uint16Array(totalPixels),
+        autoMin: maxValue,
+        autoMax: 0,
+        maxValue,
+    };
+}
+
+export function appendGrayChunk(state: GrayDecodeState, chunk: Uint8Array): void {
+    if (state.pixelsWritten >= state.totalPixels || chunk.length === 0) {
+        return;
+    }
+
+    let offset = 0;
+    if (state.remainingHeaderBytes > 0) {
+        const skipped = Math.min(state.remainingHeaderBytes, chunk.length);
+        state.remainingHeaderBytes -= skipped;
+        offset += skipped;
+    }
+
+    if (offset >= chunk.length) {
+        return;
+    }
+
+    const writeGrayPixel = (value: number): void => {
+        state.rawGray[state.pixelsWritten] = value;
+        if (value < state.autoMin) { state.autoMin = value; }
+        if (value > state.autoMax) { state.autoMax = value; }
+        state.pixelsWritten += 1;
+    };
+
+    if (state.format === 'gray8') {
+        while (offset < chunk.length && state.pixelsWritten < state.totalPixels) {
+            writeGrayPixel(chunk[offset++]);
+        }
+    } else {
+        if (state.hasPendingByte && offset < chunk.length && state.pixelsWritten < state.totalPixels) {
+            const b0 = state.pendingByte;
+            const b1 = chunk[offset++];
+            writeGrayPixel(state.format === 'gray16le' ? ((b1 << 8) | b0) : ((b0 << 8) | b1));
+            state.hasPendingByte = false;
+        }
+        while (offset + 2 <= chunk.length && state.pixelsWritten < state.totalPixels) {
+            const b0 = chunk[offset++];
+            const b1 = chunk[offset++];
+            writeGrayPixel(state.format === 'gray16le' ? ((b1 << 8) | b0) : ((b0 << 8) | b1));
+        }
+        if (offset < chunk.length && state.pixelsWritten < state.totalPixels) {
+            state.pendingByte = chunk[offset];
+            state.hasPendingByte = true;
+        }
+    }
+}
+
+export function applyWindowLevel(
+    rawGray: Uint16Array,
+    totalPixels: number,
+    windowMin: number,
+    windowMax: number,
+    pixels: Uint8ClampedArray
+): void {
+    const range = windowMax - windowMin;
+    for (let p = 0; p < totalPixels; p++) {
+        let mapped: number;
+        if (range <= 0) {
+            mapped = 128;
+        } else {
+            mapped = Math.round(((rawGray[p] - windowMin) / range) * 255);
+            if (mapped < 0) { mapped = 0; }
+            if (mapped > 255) { mapped = 255; }
+        }
+        const idx = p * 4;
+        pixels[idx] = mapped;
+        pixels[idx + 1] = mapped;
+        pixels[idx + 2] = mapped;
+        pixels[idx + 3] = 255;
+    }
+}
+
 class RawImageDocument implements vscode.CustomDocument {
     constructor(public readonly uri: vscode.Uri) {}
     dispose(): void {}
@@ -841,6 +952,40 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
             border: 1px solid #444;
             box-shadow: 0 0 20px rgba(0,0,0,0.5);
         }
+        .window-controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            color: #9cdcfe;
+            font-family: 'Consolas', 'Courier New', monospace;
+            width: 100%;
+            max-width: 640px;
+        }
+        .window-controls label {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+        }
+        .window-controls input[type=range] {
+            width: 140px;
+            accent-color: #0e639c;
+            cursor: pointer;
+        }
+        .window-reset {
+            appearance: none;
+            background: none;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: #9cdcfe;
+            cursor: pointer;
+            font-size: 11px;
+            padding: 3px 8px;
+        }
+        .window-reset:hover { border-color: #9cdcfe; }
         .spinner {
             width: 40px; height: 40px;
             border: 3px solid #333;
@@ -869,6 +1014,9 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         ${createRawImageDecodeState.toString()}
         ${decodeRawPixel.toString()}
         ${appendRawImageChunk.toString()}
+        ${createGrayDecodeState.toString()}
+        ${appendGrayChunk.toString()}
+        ${applyWindowLevel.toString()}
 
         function clearReadyTimer() {
             if (readyTimer) {
@@ -981,7 +1129,41 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         var imageData = ctx.createImageData(width, height);
                         var pixels = imageData.data;
 
-                        if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
+                        var isGrayscale = (format === 'gray8' || format === 'gray16le' || format === 'gray16be');
+                        var rawGray = null;
+                        var grayMaxValue = 255;
+                        var grayWindowMin = 0;
+                        var grayWindowMax = 255;
+
+                        if (isGrayscale) {
+                            var grayState = createGrayDecodeState(width, height, headerSize, format);
+                            if (response.body && typeof response.body.getReader === 'function') {
+                                var grayReader = response.body.getReader();
+                                try {
+                                    while (grayState.pixelsWritten < grayState.totalPixels) {
+                                        var grayStep = await grayReader.read();
+                                        if (grayStep.done) { break; }
+                                        if (grayStep.value) { appendGrayChunk(grayState, grayStep.value); }
+                                    }
+                                    if (grayState.pixelsWritten >= grayState.totalPixels && typeof grayReader.cancel === 'function') {
+                                        await grayReader.cancel();
+                                    }
+                                } finally {
+                                    grayReader.releaseLock();
+                                }
+                            } else {
+                                var rawBuf = new Uint8Array(await response.arrayBuffer());
+                                appendGrayChunk(grayState, rawBuf);
+                            }
+                            rawGray = grayState.rawGray;
+                            grayMaxValue = grayState.maxValue;
+                            var autoMin = grayState.autoMin;
+                            var autoMax = grayState.autoMax;
+                            if (autoMin >= autoMax) { autoMin = 0; autoMax = grayMaxValue; }
+                            grayWindowMin = autoMin;
+                            grayWindowMax = autoMax;
+                            applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
+                        } else if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
                             var reader = response.body.getReader();
                             var decodeState = createRawImageDecodeState(width, height, headerSize, format);
                             try {
@@ -1044,6 +1226,88 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         viewerHeader.appendChild(exportButton);
                         root.appendChild(viewerHeader);
                         root.appendChild(canvas);
+
+                        if (rawGray !== null) {
+                            var totalPx = width * height;
+                            var wlControls = document.createElement('div');
+                            wlControls.className = 'window-controls';
+
+                            var minValSpan = document.createElement('span');
+                            minValSpan.textContent = String(grayWindowMin);
+                            var minLbl = document.createElement('label');
+                            minLbl.appendChild(document.createTextNode('Min\u00a0'));
+                            var minSlider = document.createElement('input');
+                            minSlider.type = 'range';
+                            minSlider.min = '0';
+                            minSlider.max = String(grayMaxValue);
+                            minSlider.value = String(grayWindowMin);
+                            minLbl.appendChild(minSlider);
+                            minLbl.appendChild(document.createTextNode('\u00a0'));
+                            minLbl.appendChild(minValSpan);
+
+                            var maxValSpan = document.createElement('span');
+                            maxValSpan.textContent = String(grayWindowMax);
+                            var maxLbl = document.createElement('label');
+                            maxLbl.appendChild(document.createTextNode('Max\u00a0'));
+                            var maxSlider = document.createElement('input');
+                            maxSlider.type = 'range';
+                            maxSlider.min = '0';
+                            maxSlider.max = String(grayMaxValue);
+                            maxSlider.value = String(grayWindowMax);
+                            maxLbl.appendChild(maxSlider);
+                            maxLbl.appendChild(document.createTextNode('\u00a0'));
+                            maxLbl.appendChild(maxValSpan);
+
+                            var resetBtn = document.createElement('button');
+                            resetBtn.type = 'button';
+                            resetBtn.className = 'window-reset';
+                            resetBtn.textContent = 'Reset';
+
+                            var initialMin = grayWindowMin;
+                            var initialMax = grayWindowMax;
+                            var capturedRawGray = rawGray;
+                            var capturedCtx = ctx;
+                            var capturedImageData = imageData;
+                            var rafPending = false;
+
+                            function scheduleWindowRender() {
+                                if (!rafPending) {
+                                    rafPending = true;
+                                    requestAnimationFrame(function() {
+                                        rafPending = false;
+                                        var wMin = parseInt(minSlider.value, 10);
+                                        var wMax = parseInt(maxSlider.value, 10);
+                                        minValSpan.textContent = String(wMin);
+                                        maxValSpan.textContent = String(wMax);
+                                        applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data);
+                                        capturedCtx.putImageData(capturedImageData, 0, 0);
+                                    });
+                                }
+                            }
+
+                            minSlider.addEventListener('input', function() {
+                                var wMin = parseInt(minSlider.value, 10);
+                                var wMax = parseInt(maxSlider.value, 10);
+                                if (wMin > wMax) { minSlider.value = String(wMax); }
+                                scheduleWindowRender();
+                            });
+                            maxSlider.addEventListener('input', function() {
+                                var wMin = parseInt(minSlider.value, 10);
+                                var wMax = parseInt(maxSlider.value, 10);
+                                if (wMax < wMin) { maxSlider.value = String(wMin); }
+                                scheduleWindowRender();
+                            });
+                            resetBtn.addEventListener('click', function() {
+                                minSlider.value = String(initialMin);
+                                maxSlider.value = String(initialMax);
+                                scheduleWindowRender();
+                            });
+
+                            wlControls.appendChild(minLbl);
+                            wlControls.appendChild(maxLbl);
+                            wlControls.appendChild(resetBtn);
+                            root.appendChild(wlControls);
+                        }
                     })
                     .catch(function(err) {
                         if (err && err.name === 'AbortError') {
