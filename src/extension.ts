@@ -1008,6 +1008,12 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
             font-size: 13px;
             font-family: 'Consolas', 'Courier New', monospace;
         }
+        .pixel-info-bar {
+            color: #9cdcfe;
+            font-size: 13px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            min-height: 1.2em;
+        }
         .action-button {
             appearance: none;
             border: 1px solid #1177bb;
@@ -1377,6 +1383,35 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         viewerHeader.appendChild(exportButton);
                         root.appendChild(viewerHeader);
                         root.appendChild(canvas);
+
+                        var pixelInfoBar = document.createElement('div');
+                        pixelInfoBar.className = 'pixel-info-bar';
+                        root.appendChild(pixelInfoBar);
+
+                        canvas.addEventListener('mousemove', function(e) {
+                            var rect = canvas.getBoundingClientRect();
+                            var scaleX = canvas.width / rect.width;
+                            var scaleY = canvas.height / rect.height;
+                            var px = Math.floor((e.clientX - rect.left) * scaleX);
+                            var py = Math.floor((e.clientY - rect.top) * scaleY);
+                            if (px < 0 || px >= width || py < 0 || py >= height) {
+                                pixelInfoBar.textContent = '';
+                                return;
+                            }
+                            var text = '(' + px + ', ' + py + ')';
+                            if (rawGray !== null) {
+                                var rawVal = rawGray[py * width + px];
+                                text += '  Gray: ' + (isFloatGray ? rawVal.toFixed(4) : rawVal);
+                            } else {
+                                var idx4 = (py * width + px) * 4;
+                                text += '  R: ' + imageData.data[idx4] + '  G: ' + imageData.data[idx4 + 1] + '  B: ' + imageData.data[idx4 + 2];
+                            }
+                            pixelInfoBar.textContent = text;
+                        });
+
+                        canvas.addEventListener('mouseleave', function() {
+                            pixelInfoBar.textContent = '';
+                        });
 
                         if (rawGray !== null) {
                             var totalPx = width * height;
