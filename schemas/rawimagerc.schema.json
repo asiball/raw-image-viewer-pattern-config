@@ -39,7 +39,9 @@
         "bgra32",
         "yuv420p",
         "nv12",
-        "yuyv422"
+        "yuyv422",
+        "float32",
+        "depth16"
       ],
       "enumDescriptions": [
         "8-bit grayscale (1 byte/pixel)",
@@ -51,7 +53,9 @@
         "32-bit BGRA (4 bytes/pixel)",
         "Planar YUV 4:2:0 — requires even width and height (1.5 bytes/pixel)",
         "Semi-planar YUV 4:2:0 — requires even width and height (1.5 bytes/pixel)",
-        "Packed YUV 4:2:2 — requires even width (2 bytes/pixel)"
+        "Packed YUV 4:2:2 — requires even width (2 bytes/pixel)",
+        "32-bit float grayscale, little-endian — auto window/level (4 bytes/pixel)",
+        "16-bit depth, little-endian — auto window/level (2 bytes/pixel)"
       ]
     }
   },

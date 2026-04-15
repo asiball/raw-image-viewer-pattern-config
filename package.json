@@ -91,7 +91,9 @@
             "bgra32",
             "yuv420p",
             "nv12",
-            "yuyv422"
+            "yuyv422",
+            "float32",
+            "depth16"
           ],
           "default": "rgb24",
           "markdownDescription": "Fallback pixel format when `.rawimagerc` is missing.",
