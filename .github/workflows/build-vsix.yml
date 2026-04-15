@@ -11,11 +11,6 @@ on:
   push:
     branches:
       - main
-      - 'copilot/**'
-      - 'docs/**'
-      - 'feature/**'
-      - 'fix/**'
-      - 'refactor/**'
   pull_request:
 
 jobs:
@@ -47,6 +42,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Check formatting
+        run: npm run format:check
 
       - name: Lint
         run: npm run lint
