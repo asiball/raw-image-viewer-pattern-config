@@ -1244,10 +1244,50 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #444; }
         th { color: #9cdcfe; }
         canvas {
-            max-width: 100%;
             image-rendering: pixelated;
             border: 1px solid #444;
             box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            display: block;
+        }
+        .canvas-viewport {
+            overflow: hidden;
+            cursor: grab;
+            position: relative;
+            align-self: stretch;
+            height: calc(100vh - 120px);
+            min-height: 200px;
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 4px;
+        }
+        .canvas-viewport.panning {
+            cursor: grabbing;
+        }
+        .zoom-indicator {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background: rgba(0, 0, 0, 0.6);
+            color: #9cdcfe;
+            font-size: 11px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            padding: 2px 6px;
+            border-radius: 3px;
+            pointer-events: none;
+            user-select: none;
+        }
+        .zoom-hint {
+            position: absolute;
+            bottom: 8px;
+            left: 8px;
+            background: rgba(0, 0, 0, 0.5);
+            color: #888;
+            font-size: 10px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            padding: 2px 6px;
+            border-radius: 3px;
+            pointer-events: none;
+            user-select: none;
         }
         .window-controls {
             display: flex;
@@ -1559,10 +1599,106 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             vscode.postMessage({ type: 'savePng', dataUrl: canvas.toDataURL('image/png') });
                         });
 
+                        var resetZoomButton = document.createElement('button');
+                        resetZoomButton.type = 'button';
+                        resetZoomButton.className = 'action-button';
+                        resetZoomButton.textContent = 'Reset Zoom';
+
+                        var viewport = document.createElement('div');
+                        viewport.className = 'canvas-viewport';
+
+                        var zoomIndicator = document.createElement('div');
+                        zoomIndicator.className = 'zoom-indicator';
+                        zoomIndicator.textContent = '100%';
+
+                        var zoomHint = document.createElement('div');
+                        zoomHint.className = 'zoom-hint';
+                        zoomHint.textContent = 'Ctrl+Scroll: zoom \u00b7 Drag: pan \u00b7 Dbl-click: fit';
+
+                        canvas.style.transformOrigin = '0 0';
+
+                        var panX = 0;
+                        var panY = 0;
+                        var zoom = 1.0;
+                        var isPanning = false;
+                        var dragStartX = 0;
+                        var dragStartY = 0;
+                        var dragStartPanX = 0;
+                        var dragStartPanY = 0;
+
+                        function applyTransform() {
+                            canvas.style.transform = 'translate(' + panX + 'px, ' + panY + 'px) scale(' + zoom + ')';
+                            zoomIndicator.textContent = Math.round(zoom * 100) + '%';
+                        }
+
+                        function fitToViewport() {
+                            var vw = viewport.clientWidth;
+                            var vh = viewport.clientHeight;
+                            if (vw > 0 && vh > 0 && canvas.width > 0 && canvas.height > 0) {
+                                zoom = Math.min(vw / canvas.width, vh / canvas.height);
+                                panX = (vw - canvas.width * zoom) / 2;
+                                panY = (vh - canvas.height * zoom) / 2;
+                            } else {
+                                zoom = 1;
+                                panX = 0;
+                                panY = 0;
+                            }
+                            applyTransform();
+                        }
+
+                        resetZoomButton.addEventListener('click', fitToViewport);
+
+                        viewport.addEventListener('wheel', function(e) {
+                            if (!e.ctrlKey) { return; }
+                            e.preventDefault();
+                            var rect = viewport.getBoundingClientRect();
+                            var cx = (e.clientX - rect.left - panX) / zoom;
+                            var cy = (e.clientY - rect.top - panY) / zoom;
+                            var factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+                            zoom = Math.max(0.01, Math.min(32, zoom * factor));
+                            panX = (e.clientX - rect.left) - cx * zoom;
+                            panY = (e.clientY - rect.top) - cy * zoom;
+                            applyTransform();
+                        }, { passive: false });
+
+                        viewport.addEventListener('mousedown', function(e) {
+                            if (e.button !== 0) { return; }
+                            isPanning = true;
+                            dragStartX = e.clientX;
+                            dragStartY = e.clientY;
+                            dragStartPanX = panX;
+                            dragStartPanY = panY;
+                            viewport.classList.add('panning');
+                            e.preventDefault();
+                        });
+
+                        window.addEventListener('mousemove', function(e) {
+                            if (!isPanning) { return; }
+                            panX = dragStartPanX + (e.clientX - dragStartX);
+                            panY = dragStartPanY + (e.clientY - dragStartY);
+                            applyTransform();
+                        });
+
+                        window.addEventListener('mouseup', function() {
+                            if (isPanning) {
+                                isPanning = false;
+                                viewport.classList.remove('panning');
+                            }
+                        });
+
+                        viewport.addEventListener('dblclick', fitToViewport);
+
                         viewerHeader.appendChild(infoBar);
                         viewerHeader.appendChild(exportButton);
+                        viewerHeader.appendChild(resetZoomButton);
                         root.appendChild(viewerHeader);
-                        root.appendChild(canvas);
+
+                        viewport.appendChild(canvas);
+                        viewport.appendChild(zoomIndicator);
+                        viewport.appendChild(zoomHint);
+                        root.appendChild(viewport);
+
+                        requestAnimationFrame(fitToViewport);
 
                         var pixelInfoBar = document.createElement('div');
                         pixelInfoBar.className = 'pixel-info-bar';
