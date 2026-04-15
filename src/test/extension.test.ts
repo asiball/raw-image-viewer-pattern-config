@@ -81,16 +81,19 @@ suite('Extension Test Suite', () => {
   });
 
   test('getLocalResourceRoots includes config ancestor', () => {
+    const isWindows = process.platform === 'win32';
+    const filePath = isWindows ? 'D:\\repo\\images\\nested\\frame.raw' : '/repo/images/nested/frame.raw';
+    const configPath = isWindows ? 'D:\\repo\\images\\.rawimagerc' : '/repo/images/.rawimagerc';
     const roots = getLocalResourceRoots(
-      vscode.Uri.file('D:\\repo\\images\\nested\\frame.raw'),
-      'D:\\repo\\images\\.rawimagerc'
+      vscode.Uri.file(filePath),
+      configPath
     );
 
     assert.deepStrictEqual(
       roots.map((root) => path.normalize(root.fsPath).toLowerCase()),
       [
-        path.normalize('D:\\repo\\images\\nested').toLowerCase(),
-        path.normalize('D:\\repo\\images').toLowerCase(),
+        path.normalize(isWindows ? 'D:\\repo\\images\\nested' : '/repo/images/nested').toLowerCase(),
+        path.normalize(isWindows ? 'D:\\repo\\images' : '/repo/images').toLowerCase(),
       ]
     );
   });
@@ -105,15 +108,22 @@ suite('Extension Test Suite', () => {
   });
 
   test('getConfigSearchDirectories walks from file directory to root', () => {
+    const isWindows = process.platform === 'win32';
+    const filePath = isWindows ? 'D:\\repo\\images\\nested\\frame.raw' : '/repo/images/nested/frame.raw';
     assert.deepStrictEqual(
-      getConfigSearchDirectories('D:\\repo\\images\\nested\\frame.raw').map((dir) =>
+      getConfigSearchDirectories(filePath).map((dir) =>
         path.normalize(dir).toLowerCase()
       ),
-      [
+      isWindows ? [
         path.normalize('D:\\repo\\images\\nested').toLowerCase(),
         path.normalize('D:\\repo\\images').toLowerCase(),
         path.normalize('D:\\repo').toLowerCase(),
         path.normalize('D:\\').toLowerCase(),
+      ] : [
+        path.normalize('/repo/images/nested').toLowerCase(),
+        path.normalize('/repo/images').toLowerCase(),
+        path.normalize('/repo').toLowerCase(),
+        path.normalize('/').toLowerCase(),
       ]
     );
   });
