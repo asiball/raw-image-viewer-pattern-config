@@ -35,7 +35,9 @@ if (typeof packageVersion !== 'string' || packageVersion.length === 0) {
 }
 
 if (packageLock.version !== packageVersion) {
-  fail(`package-lock.json version (${packageLock.version ?? 'missing'}) must match package.json version (${packageVersion}).`);
+  fail(
+    `package-lock.json version (${packageLock.version ?? 'missing'}) must match package.json version (${packageVersion}).`
+  );
 }
 
 if (packageLock.packages?.['']?.version !== packageVersion) {
@@ -44,13 +46,20 @@ if (packageLock.packages?.['']?.version !== packageVersion) {
   );
 }
 
-const changelogHeadingPattern = new RegExp(`^## \\[${escapeRegExp(packageVersion)}\\](?:\\s|$)`, 'm');
+const changelogHeadingPattern = new RegExp(
+  `^## \\[${escapeRegExp(packageVersion)}\\](?:\\s|$)`,
+  'm'
+);
 if (!changelogHeadingPattern.test(changelog)) {
   fail(`CHANGELOG.md must include a "## [${packageVersion}]" section before releasing.`);
 }
 
 if (releaseTag && releaseTag !== expectedTag) {
-  fail(`release tag ${releaseTag} does not match package.json version ${packageVersion}. Expected ${expectedTag}.`);
+  fail(
+    `release tag ${releaseTag} does not match package.json version ${packageVersion}. Expected ${expectedTag}.`
+  );
 }
 
-console.log(`Release metadata OK for version ${packageVersion}${releaseTag ? ` (${releaseTag})` : ''}.`);
+console.log(
+  `Release metadata OK for version ${packageVersion}${releaseTag ? ` (${releaseTag})` : ''}.`
+);

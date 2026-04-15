@@ -4,10 +4,7 @@
   "description": "Configuration for rendering raw binary image files with the Raw Image Viewer VS Code extension.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "width",
-    "height"
-  ],
+  "required": ["width", "height"],
   "properties": {
     "width": {
       "type": "integer",

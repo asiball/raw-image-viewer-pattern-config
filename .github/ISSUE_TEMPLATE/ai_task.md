@@ -1,9 +1,9 @@
 ---
 name: 🤖 AIタスク依頼
 about: GitHub Copilot エージェントに作業を依頼する
-title: "[AI] "
+title: '[AI] '
 labels: ai-task
-assignees: ""
+assignees: ''
 ---
 
 ## タスクの概要

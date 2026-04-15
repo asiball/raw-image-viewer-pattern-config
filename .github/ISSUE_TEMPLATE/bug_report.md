@@ -1,9 +1,9 @@
 ---
 name: 🐛 バグ報告
 about: 不具合を報告する
-title: "[BUG] "
+title: '[BUG] '
 labels: bug
-assignees: ""
+assignees: ''
 ---
 
 ## バグの説明

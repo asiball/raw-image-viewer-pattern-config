@@ -34,17 +34,17 @@ If `.rawimagerc` is not present, the extension can still render files by combini
 }
 ```
 
-| Field        | Type      | Default  | Description                                  |
-|--------------|-----------|----------|----------------------------------------------|
-| `width`      | integer   | required | Image width in pixels                        |
-| `height`     | integer   | required | Image height in pixels                       |
-| `headerSize` | integer   | `0`      | Number of bytes to skip at the start of file |
-| `format`     | enum      | `"rgb24"`| Pixel format (see table below)               |
+| Field        | Type    | Default   | Description                                  |
+| ------------ | ------- | --------- | -------------------------------------------- |
+| `width`      | integer | required  | Image width in pixels                        |
+| `height`     | integer | required  | Image height in pixels                       |
+| `headerSize` | integer | `0`       | Number of bytes to skip at the start of file |
+| `format`     | enum    | `"rgb24"` | Pixel format (see table below)               |
 
 ### Supported Pixel Formats
 
 | Format     | Description                      | Bytes/pixel |
-|------------|----------------------------------|-------------|
+| ---------- | -------------------------------- | ----------- |
 | `gray8`    | 8-bit grayscale                  | 1           |
 | `gray16le` | 16-bit grayscale (little-endian) | 2           |
 | `gray16be` | 16-bit grayscale (big-endian)    | 2           |
