@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 const streamDecodableFormats = ['gray8', 'gray16le', 'gray16be', 'rgb24', 'bgr24', 'rgba32', 'bgra32'] as const;
-export const supportedFormats = [...streamDecodableFormats, 'yuv420p', 'nv12', 'yuyv422'] as const;
+export const supportedFormats = [...streamDecodableFormats, 'yuv420p', 'nv12', 'yuyv422', 'float32', 'depth16'] as const;
 
 type StreamDecodableRawImageFormat = (typeof streamDecodableFormats)[number];
 type RawImageFormat = (typeof supportedFormats)[number];
@@ -166,7 +166,8 @@ export function appendRawImageChunk(
     }
 }
 
-type GrayscaleStreamFormat = 'gray8' | 'gray16le' | 'gray16be';
+const grayscaleStreamFormats = ['gray8', 'gray16le', 'gray16be', 'depth16'] as const;
+type GrayscaleStreamFormat = (typeof grayscaleStreamFormats)[number];
 
 interface GrayDecodeState {
     format: GrayscaleStreamFormat;
@@ -234,16 +235,17 @@ export function appendGrayChunk(state: GrayDecodeState, chunk: Uint8Array): void
             writeGrayPixel(chunk[offset++]);
         }
     } else {
+        const isLittleEndian = state.format === 'gray16le' || state.format === 'depth16';
         if (state.hasPendingByte && offset < chunk.length && state.pixelsWritten < state.totalPixels) {
             const b0 = state.pendingByte;
             const b1 = chunk[offset++];
-            writeGrayPixel(state.format === 'gray16le' ? ((b1 << 8) | b0) : ((b0 << 8) | b1));
+            writeGrayPixel(isLittleEndian ? ((b1 << 8) | b0) : ((b0 << 8) | b1));
             state.hasPendingByte = false;
         }
         while (offset + 2 <= chunk.length && state.pixelsWritten < state.totalPixels) {
             const b0 = chunk[offset++];
             const b1 = chunk[offset++];
-            writeGrayPixel(state.format === 'gray16le' ? ((b1 << 8) | b0) : ((b0 << 8) | b1));
+            writeGrayPixel(isLittleEndian ? ((b1 << 8) | b0) : ((b0 << 8) | b1));
         }
         if (offset < chunk.length && state.pixelsWritten < state.totalPixels) {
             state.pendingByte = chunk[offset];
@@ -253,7 +255,7 @@ export function appendGrayChunk(state: GrayDecodeState, chunk: Uint8Array): void
 }
 
 export function applyWindowLevel(
-    rawGray: Uint16Array,
+    rawGray: Uint16Array | Float32Array,
     totalPixels: number,
     windowMin: number,
     windowMax: number,
@@ -274,6 +276,80 @@ export function applyWindowLevel(
         pixels[idx + 1] = mapped;
         pixels[idx + 2] = mapped;
         pixels[idx + 3] = 255;
+    }
+}
+
+interface Float32DecodeState {
+    totalPixels: number;
+    pixelsWritten: number;
+    remainingHeaderBytes: number;
+    pendingBytes: Uint8Array;
+    pendingLength: number;
+    rawGrayF32: Float32Array;
+    autoMin: number;
+    autoMax: number;
+}
+
+export function createFloat32DecodeState(
+    width: number,
+    height: number,
+    headerSize: number
+): Float32DecodeState {
+    const totalPixels = width * height;
+    return {
+        totalPixels,
+        pixelsWritten: 0,
+        remainingHeaderBytes: Math.max(0, headerSize),
+        pendingBytes: new Uint8Array(4),
+        pendingLength: 0,
+        rawGrayF32: new Float32Array(totalPixels),
+        autoMin: Infinity,
+        autoMax: -Infinity,
+    };
+}
+
+export function appendFloat32Chunk(state: Float32DecodeState, chunk: Uint8Array): void {
+    if (state.pixelsWritten >= state.totalPixels || chunk.length === 0) {
+        return;
+    }
+
+    let offset = 0;
+    if (state.remainingHeaderBytes > 0) {
+        const skipped = Math.min(state.remainingHeaderBytes, chunk.length);
+        state.remainingHeaderBytes -= skipped;
+        offset += skipped;
+    }
+
+    if (offset >= chunk.length) {
+        return;
+    }
+
+    const writeFloat32Pixel = (value: number): void => {
+        if (isFinite(value)) {
+            if (value < state.autoMin) { state.autoMin = value; }
+            if (value > state.autoMax) { state.autoMax = value; }
+        }
+        state.rawGrayF32[state.pixelsWritten++] = value;
+    };
+
+    while (state.pendingLength > 0 && offset < chunk.length && state.pendingLength < 4) {
+        state.pendingBytes[state.pendingLength++] = chunk[offset++];
+    }
+
+    if (state.pendingLength === 4 && state.pixelsWritten < state.totalPixels) {
+        const pendingView = new DataView(state.pendingBytes.buffer);
+        writeFloat32Pixel(pendingView.getFloat32(0, true));
+        state.pendingLength = 0;
+    }
+
+    const view = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    while (offset + 4 <= chunk.length && state.pixelsWritten < state.totalPixels) {
+        writeFloat32Pixel(view.getFloat32(offset, true));
+        offset += 4;
+    }
+
+    while (offset < chunk.length && state.pendingLength < 4 && state.pixelsWritten < state.totalPixels) {
+        state.pendingBytes[state.pendingLength++] = chunk[offset++];
     }
 }
 
@@ -842,6 +918,41 @@ export function decodeRawImageToRgba(
                 writeYuvPixel(p + 1, y1, u, v);
             }
             return pixels;
+        case 'depth16':
+            for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 1 < pixelData.length; p++, srcIdx += 2) {
+                const value = ((pixelData[srcIdx + 1] << 8) | pixelData[srcIdx]) >> 8;
+                writePixel(p, value, value, value);
+            }
+            return pixels;
+        case 'float32': {
+            const f32View = new DataView(pixelData.buffer, pixelData.byteOffset, pixelData.byteLength);
+            const floatPixels = new Float32Array(totalPixels);
+            let fMin = Infinity;
+            let fMax = -Infinity;
+            for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 3 < pixelData.length; p++, srcIdx += 4) {
+                const value = f32View.getFloat32(srcIdx, true);
+                floatPixels[p] = value;
+                if (isFinite(value)) {
+                    if (value < fMin) { fMin = value; }
+                    if (value > fMax) { fMax = value; }
+                }
+            }
+            if (!isFinite(fMin) || !isFinite(fMax) || fMin >= fMax) { fMin = 0; fMax = 1; }
+            const fRange = fMax - fMin;
+            for (let p = 0; p < totalPixels; p++) {
+                const val = floatPixels[p];
+                let mapped: number;
+                if (!isFinite(val)) {
+                    mapped = 0;
+                } else {
+                    mapped = Math.round(((val - fMin) / fRange) * 255);
+                    if (mapped < 0) { mapped = 0; }
+                    if (mapped > 255) { mapped = 255; }
+                }
+                writePixel(p, mapped, mapped, mapped);
+            }
+            return pixels;
+        }
     }
 }
 
@@ -1005,6 +1116,7 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         const vscode = acquireVsCodeApi();
         const decodeRawImageToRgba = ${decodeRawImageToRgba.toString()};
         const streamDecodableFormats = new Set(${JSON.stringify(streamDecodableFormats)});
+        const grayscaleStreamFormats = new Set(${JSON.stringify(grayscaleStreamFormats)});
         var readyTimer = null;
         var startupTimeout = null;
         var activeAbortController = null;
@@ -1017,6 +1129,8 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         ${createGrayDecodeState.toString()}
         ${appendGrayChunk.toString()}
         ${applyWindowLevel.toString()}
+        ${createFloat32DecodeState.toString()}
+        ${appendFloat32Chunk.toString()}
 
         function clearReadyTimer() {
             if (readyTimer) {
@@ -1085,6 +1199,8 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         '<tr><td><code>yuv420p</code></td><td>Planar YUV 4:2:0</td><td>1.5</td></tr>' +
                         '<tr><td><code>nv12</code></td><td>Semi-planar YUV 4:2:0</td><td>1.5</td></tr>' +
                         '<tr><td><code>yuyv422</code></td><td>Packed YUV 4:2:2</td><td>2</td></tr>' +
+                        '<tr><td><code>float32</code></td><td>32-bit float grayscale</td><td>4</td></tr>' +
+                        '<tr><td><code>depth16</code></td><td>16-bit depth (little-endian)</td><td>2</td></tr>' +
                         '</table>' +
                         '</div>';
                     return;
@@ -1129,11 +1245,14 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         var imageData = ctx.createImageData(width, height);
                         var pixels = imageData.data;
 
-                        var isGrayscale = (format === 'gray8' || format === 'gray16le' || format === 'gray16be');
+                        var isGrayscale = grayscaleStreamFormats.has(format);
+                        var isFloat32 = (format === 'float32');
                         var rawGray = null;
+                        var grayMinValue = 0;
                         var grayMaxValue = 255;
                         var grayWindowMin = 0;
                         var grayWindowMax = 255;
+                        var isFloatGray = false;
 
                         if (isGrayscale) {
                             var grayState = createGrayDecodeState(width, height, headerSize, format);
@@ -1162,6 +1281,38 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             if (autoMin >= autoMax) { autoMin = 0; autoMax = grayMaxValue; }
                             grayWindowMin = autoMin;
                             grayWindowMax = autoMax;
+                            applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
+                        } else if (isFloat32) {
+                            var f32State = createFloat32DecodeState(width, height, headerSize);
+                            if (response.body && typeof response.body.getReader === 'function') {
+                                var f32Reader = response.body.getReader();
+                                try {
+                                    while (f32State.pixelsWritten < f32State.totalPixels) {
+                                        var f32Step = await f32Reader.read();
+                                        if (f32Step.done) { break; }
+                                        if (f32Step.value) { appendFloat32Chunk(f32State, f32Step.value); }
+                                    }
+                                    if (f32State.pixelsWritten >= f32State.totalPixels && typeof f32Reader.cancel === 'function') {
+                                        await f32Reader.cancel();
+                                    }
+                                } finally {
+                                    f32Reader.releaseLock();
+                                }
+                            } else {
+                                var f32Buf = new Uint8Array(await response.arrayBuffer());
+                                appendFloat32Chunk(f32State, f32Buf);
+                            }
+                            rawGray = f32State.rawGrayF32;
+                            isFloatGray = true;
+                            var f32AutoMin = f32State.autoMin;
+                            var f32AutoMax = f32State.autoMax;
+                            if (!isFinite(f32AutoMin) || !isFinite(f32AutoMax) || f32AutoMin >= f32AutoMax) {
+                                f32AutoMin = 0; f32AutoMax = 1;
+                            }
+                            grayMinValue = f32AutoMin;
+                            grayMaxValue = f32AutoMax;
+                            grayWindowMin = f32AutoMin;
+                            grayWindowMax = f32AutoMax;
                             applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
                         } else if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
                             var reader = response.body.getReader();
@@ -1233,27 +1384,29 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             wlControls.className = 'window-controls';
 
                             var minValSpan = document.createElement('span');
-                            minValSpan.textContent = String(grayWindowMin);
+                            minValSpan.textContent = isFloatGray ? grayWindowMin.toFixed(3) : String(grayWindowMin);
                             var minLbl = document.createElement('label');
                             minLbl.appendChild(document.createTextNode('Min\u00a0'));
                             var minSlider = document.createElement('input');
                             minSlider.type = 'range';
-                            minSlider.min = '0';
+                            minSlider.min = String(grayMinValue);
                             minSlider.max = String(grayMaxValue);
                             minSlider.value = String(grayWindowMin);
+                            if (isFloatGray) { minSlider.step = 'any'; }
                             minLbl.appendChild(minSlider);
                             minLbl.appendChild(document.createTextNode('\u00a0'));
                             minLbl.appendChild(minValSpan);
 
                             var maxValSpan = document.createElement('span');
-                            maxValSpan.textContent = String(grayWindowMax);
+                            maxValSpan.textContent = isFloatGray ? grayWindowMax.toFixed(3) : String(grayWindowMax);
                             var maxLbl = document.createElement('label');
                             maxLbl.appendChild(document.createTextNode('Max\u00a0'));
                             var maxSlider = document.createElement('input');
                             maxSlider.type = 'range';
-                            maxSlider.min = '0';
+                            maxSlider.min = String(grayMinValue);
                             maxSlider.max = String(grayMaxValue);
                             maxSlider.value = String(grayWindowMax);
+                            if (isFloatGray) { maxSlider.step = 'any'; }
                             maxLbl.appendChild(maxSlider);
                             maxLbl.appendChild(document.createTextNode('\u00a0'));
                             maxLbl.appendChild(maxValSpan);
@@ -1268,17 +1421,25 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             var capturedRawGray = rawGray;
                             var capturedCtx = ctx;
                             var capturedImageData = imageData;
+                            var capturedIsFloat = isFloatGray;
                             var rafPending = false;
+
+                            function readSliderVal(slider) {
+                                return capturedIsFloat ? parseFloat(slider.value) : parseInt(slider.value, 10);
+                            }
+                            function fmtSliderVal(val) {
+                                return capturedIsFloat ? val.toFixed(3) : String(val);
+                            }
 
                             function scheduleWindowRender() {
                                 if (!rafPending) {
                                     rafPending = true;
                                     requestAnimationFrame(function() {
                                         rafPending = false;
-                                        var wMin = parseInt(minSlider.value, 10);
-                                        var wMax = parseInt(maxSlider.value, 10);
-                                        minValSpan.textContent = String(wMin);
-                                        maxValSpan.textContent = String(wMax);
+                                        var wMin = readSliderVal(minSlider);
+                                        var wMax = readSliderVal(maxSlider);
+                                        minValSpan.textContent = fmtSliderVal(wMin);
+                                        maxValSpan.textContent = fmtSliderVal(wMax);
                                         applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data);
                                         capturedCtx.putImageData(capturedImageData, 0, 0);
                                     });
@@ -1286,14 +1447,14 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             }
 
                             minSlider.addEventListener('input', function() {
-                                var wMin = parseInt(minSlider.value, 10);
-                                var wMax = parseInt(maxSlider.value, 10);
+                                var wMin = readSliderVal(minSlider);
+                                var wMax = readSliderVal(maxSlider);
                                 if (wMin > wMax) { minSlider.value = String(wMax); }
                                 scheduleWindowRender();
                             });
                             maxSlider.addEventListener('input', function() {
-                                var wMin = parseInt(minSlider.value, 10);
-                                var wMax = parseInt(maxSlider.value, 10);
+                                var wMin = readSliderVal(minSlider);
+                                var wMax = readSliderVal(maxSlider);
                                 if (wMax < wMin) { maxSlider.value = String(wMin); }
                                 scheduleWindowRender();
                             });

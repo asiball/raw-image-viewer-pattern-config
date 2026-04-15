@@ -55,8 +55,10 @@ If `.rawimagerc` is not present, the extension can still render files by combini
 | `yuv420p`  | Planar YUV 4:2:0                 | 1.5         |
 | `nv12`     | Semi-planar YUV 4:2:0            | 1.5         |
 | `yuyv422`  | Packed YUV 4:2:2                 | 2           |
+| `float32`  | 32-bit float grayscale           | 4           |
+| `depth16`  | 16-bit depth (little-endian)     | 2           |
 
-For `yuv420p` and `nv12`, use even image widths and heights. `yuyv422` requires an even width.
+For `yuv420p` and `nv12`, use even image widths and heights. `yuyv422` requires an even width. `float32` and `depth16` display with auto window/level controls; you can adjust the min/max range after rendering.
 
 ## Usage
 

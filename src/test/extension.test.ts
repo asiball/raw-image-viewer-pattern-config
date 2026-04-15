@@ -6,9 +6,11 @@ import * as path from 'path';
 // as well as import your extension to test it
 import * as vscode from 'vscode';
 import {
+	appendFloat32Chunk,
 	appendGrayChunk,
 	appendRawImageChunk,
 	applyWindowLevel,
+	createFloat32DecodeState,
 	createGrayDecodeState,
 	createInitialRenderHandshake,
 	createRawImageDecodeState,
@@ -432,6 +434,131 @@ suite('Extension Test Suite', () => {
 			() => decodeRawImageToRgba(new Uint8Array([0, 0, 0, 0]), 3, 1, 'yuyv422'),
 			/requires an even width/
 		);
+	});
+
+	test('createGrayDecodeState initialises depth16 same as gray16le', () => {
+		const state = createGrayDecodeState(2, 1, 0, 'depth16');
+		assert.strictEqual(state.bytesPerPixel, 2);
+		assert.strictEqual(state.maxValue, 65535);
+		assert.strictEqual(state.totalPixels, 2);
+	});
+
+	test('appendGrayChunk decodes depth16 as little-endian', () => {
+		const state = createGrayDecodeState(2, 1, 0, 'depth16');
+		appendGrayChunk(state, Uint8Array.from([0x34, 0x12, 0xcd, 0xab]));
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.strictEqual(state.rawGray[0], 0x1234);
+		assert.strictEqual(state.rawGray[1], 0xabcd);
+	});
+
+	test('appendGrayChunk decodes depth16 across chunk boundaries', () => {
+		const state = createGrayDecodeState(2, 1, 0, 'depth16');
+		appendGrayChunk(state, Uint8Array.from([0x34]));
+		assert.strictEqual(state.pixelsWritten, 0);
+		assert.strictEqual(state.hasPendingByte, true);
+
+		appendGrayChunk(state, Uint8Array.from([0x12, 0xcd, 0xab]));
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.strictEqual(state.rawGray[0], 0x1234);
+		assert.strictEqual(state.rawGray[1], 0xabcd);
+	});
+
+	test('decodeRawImageToRgba decodes depth16 as 16-bit little-endian grayscale', () => {
+		// 0x0000 → 0, 0xff00 → 255 (upper byte used after >> 8)
+		const data = new Uint8Array([0x00, 0x00, 0x00, 0xff]);
+		const rgba = decodeRawImageToRgba(data, 2, 1, 'depth16');
+		assert.strictEqual(rgba[0], 0);    // pixel 0 R
+		assert.strictEqual(rgba[4], 255);  // pixel 1 R
+		assert.strictEqual(rgba[3], 255);  // pixel 0 alpha
+		assert.strictEqual(rgba[7], 255);  // pixel 1 alpha
+	});
+
+	test('createFloat32DecodeState initialises state correctly', () => {
+		const state = createFloat32DecodeState(4, 2, 0);
+		assert.strictEqual(state.totalPixels, 8);
+		assert.strictEqual(state.pixelsWritten, 0);
+		assert.strictEqual(state.pendingLength, 0);
+		assert.strictEqual(state.autoMin, Infinity);
+		assert.strictEqual(state.autoMax, -Infinity);
+		assert.strictEqual(state.rawGrayF32.length, 8);
+	});
+
+	test('appendFloat32Chunk decodes little-endian float32 pixels', () => {
+		const state = createFloat32DecodeState(2, 1, 0);
+		const buf = new ArrayBuffer(8);
+		const view = new DataView(buf);
+		view.setFloat32(0, 1.5, true);
+		view.setFloat32(4, 3.0, true);
+		appendFloat32Chunk(state, new Uint8Array(buf));
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.ok(Math.abs(state.rawGrayF32[0] - 1.5) < 1e-5);
+		assert.ok(Math.abs(state.rawGrayF32[1] - 3.0) < 1e-5);
+		assert.ok(Math.abs(state.autoMin - 1.5) < 1e-5);
+		assert.ok(Math.abs(state.autoMax - 3.0) < 1e-5);
+	});
+
+	test('appendFloat32Chunk decodes float32 across chunk boundaries', () => {
+		const state = createFloat32DecodeState(1, 1, 0);
+		const buf = new ArrayBuffer(4);
+		new DataView(buf).setFloat32(0, 2.5, true);
+		const bytes = new Uint8Array(buf);
+		appendFloat32Chunk(state, bytes.subarray(0, 2));
+		assert.strictEqual(state.pixelsWritten, 0);
+		appendFloat32Chunk(state, bytes.subarray(2));
+		assert.strictEqual(state.pixelsWritten, 1);
+		assert.ok(Math.abs(state.rawGrayF32[0] - 2.5) < 1e-5);
+	});
+
+	test('appendFloat32Chunk skips header bytes', () => {
+		const state = createFloat32DecodeState(1, 1, 4);
+		const buf = new ArrayBuffer(8);
+		new DataView(buf).setFloat32(4, 7.0, true);
+		appendFloat32Chunk(state, new Uint8Array(buf));
+		assert.strictEqual(state.pixelsWritten, 1);
+		assert.ok(Math.abs(state.rawGrayF32[0] - 7.0) < 1e-5);
+	});
+
+	test('appendFloat32Chunk ignores NaN values in auto min/max', () => {
+		const state = createFloat32DecodeState(2, 1, 0);
+		const buf = new ArrayBuffer(8);
+		const view = new DataView(buf);
+		view.setFloat32(0, NaN, true);
+		view.setFloat32(4, 5.0, true);
+		appendFloat32Chunk(state, new Uint8Array(buf));
+		assert.strictEqual(state.pixelsWritten, 2);
+		assert.ok(Math.abs(state.autoMin - 5.0) < 1e-5);
+		assert.ok(Math.abs(state.autoMax - 5.0) < 1e-5);
+	});
+
+	test('decodeRawImageToRgba decodes float32 with auto normalization', () => {
+		const buf = new ArrayBuffer(8);
+		const view = new DataView(buf);
+		view.setFloat32(0, 0.0, true);
+		view.setFloat32(4, 1.0, true);
+		const rgba = decodeRawImageToRgba(new Uint8Array(buf), 2, 1, 'float32');
+		assert.strictEqual(rgba[0], 0);    // min value → 0
+		assert.strictEqual(rgba[4], 255);  // max value → 255
+		assert.strictEqual(rgba[3], 255);  // alpha
+		assert.strictEqual(rgba[7], 255);  // alpha
+	});
+
+	test('decodeRawImageToRgba handles float32 NaN as black', () => {
+		const buf = new ArrayBuffer(8);
+		const view = new DataView(buf);
+		view.setFloat32(0, NaN, true);
+		view.setFloat32(4, 1.0, true);
+		const rgba = decodeRawImageToRgba(new Uint8Array(buf), 2, 1, 'float32');
+		assert.strictEqual(rgba[0], 0);    // NaN → black
+	});
+
+	test('applyWindowLevel accepts Float32Array', () => {
+		const rawGray = new Float32Array([0.0, 0.5, 1.0]);
+		const pixels = new Uint8ClampedArray(12);
+		applyWindowLevel(rawGray, 3, 0.0, 1.0, pixels);
+		assert.strictEqual(pixels[0], 0);
+		assert.strictEqual(pixels[4], 128);
+		assert.strictEqual(pixels[8], 255);
+		assert.strictEqual(pixels[3], 255);
 	});
 
 	test('rawimagerc.schema.json format enum matches extension supported formats', () => {
