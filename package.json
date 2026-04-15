@@ -2,7 +2,7 @@
   "name": "rawviewer",
   "displayName": "Raw Image Viewer",
   "description": "View raw binary image files in VS Code using a .rawimagerc configuration file",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "asiball",
   "repository": {
     "type": "git",
@@ -112,6 +112,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
+    "validate:release": "node scripts/validate-release-version.mjs",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src",
     "test": "vscode-test"

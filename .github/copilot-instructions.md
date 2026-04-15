@@ -60,3 +60,10 @@ When creating or triaging an issue, always assign exactly one priority label:
 - `priority: low`
 
 AI agents must add one of these priority labels when they create a new issue. Do not leave AI-created issues without a priority label.
+
+## Release Versioning Conventions
+
+- Treat the release version as a single value that must match across `package.json`, `package-lock.json`, `CHANGELOG.md`, the Git tag (`v<version>`), and the packaged VSIX filename.
+- Before cutting a release tag, update the versioned metadata in the same branch/PR. Do not rely on the Git tag alone.
+- Run `npm run validate:release` before tagging. In CI, the release workflow will fail if the release tag does not match `package.json` or if the matching `CHANGELOG.md` section is missing.
+- Using a GitHub milestone or project for the target release is recommended for planning, but it does not replace the version checks above.
