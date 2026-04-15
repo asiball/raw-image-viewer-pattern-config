@@ -1208,6 +1208,10 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         .action-button:hover {
             background: #1177bb;
         }
+        .action-button.active {
+            background: #1177bb;
+            border-color: #9cdcfe;
+        }
         .error-box {
             background: #5a1d1d;
             border: 1px solid #f48771;
@@ -1599,10 +1603,15 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             vscode.postMessage({ type: 'savePng', dataUrl: canvas.toDataURL('image/png') });
                         });
 
-                        var resetZoomButton = document.createElement('button');
-                        resetZoomButton.type = 'button';
-                        resetZoomButton.className = 'action-button';
-                        resetZoomButton.textContent = 'Reset Zoom';
+                        var fitButton = document.createElement('button');
+                        fitButton.type = 'button';
+                        fitButton.className = 'action-button active';
+                        fitButton.textContent = 'Fit';
+
+                        var zoom1to1Button = document.createElement('button');
+                        zoom1to1Button.type = 'button';
+                        zoom1to1Button.className = 'action-button';
+                        zoom1to1Button.textContent = '1:1';
 
                         var viewport = document.createElement('div');
                         viewport.className = 'canvas-viewport';
@@ -1620,6 +1629,7 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         var panX = 0;
                         var panY = 0;
                         var zoom = 1.0;
+                        var fitMode = true;
                         var isPanning = false;
                         var dragStartX = 0;
                         var dragStartY = 0;
@@ -1646,11 +1656,35 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             applyTransform();
                         }
 
-                        resetZoomButton.addEventListener('click', fitToViewport);
+                        function setFitMode(enabled) {
+                            fitMode = enabled;
+                            if (enabled) {
+                                fitButton.classList.add('active');
+                                fitToViewport();
+                            } else {
+                                fitButton.classList.remove('active');
+                            }
+                        }
+
+                        fitButton.addEventListener('click', function() {
+                            setFitMode(!fitMode);
+                        });
+
+                        zoom1to1Button.addEventListener('click', function() {
+                            setFitMode(false);
+                            zoom = 1.0;
+                            var vw = viewport.clientWidth;
+                            var vh = viewport.clientHeight;
+                            panX = (vw - canvas.width) / 2;
+                            panY = (vh - canvas.height) / 2;
+                            applyTransform();
+                        });
 
                         viewport.addEventListener('wheel', function(e) {
                             if (!e.ctrlKey) { return; }
                             e.preventDefault();
+                            fitMode = false;
+                            fitButton.classList.remove('active');
                             var rect = viewport.getBoundingClientRect();
                             var cx = (e.clientX - rect.left - panX) / zoom;
                             var cy = (e.clientY - rect.top - panY) / zoom;
@@ -1674,8 +1708,14 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
 
                         window.addEventListener('mousemove', function(e) {
                             if (!isPanning) { return; }
-                            panX = dragStartPanX + (e.clientX - dragStartX);
-                            panY = dragStartPanY + (e.clientY - dragStartY);
+                            var dx = e.clientX - dragStartX;
+                            var dy = e.clientY - dragStartY;
+                            if (fitMode && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+                                fitMode = false;
+                                fitButton.classList.remove('active');
+                            }
+                            panX = dragStartPanX + dx;
+                            panY = dragStartPanY + dy;
                             applyTransform();
                         });
 
@@ -1686,11 +1726,23 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             }
                         });
 
-                        viewport.addEventListener('dblclick', fitToViewport);
+                        viewport.addEventListener('dblclick', function() {
+                            setFitMode(true);
+                        });
+
+                        if (typeof ResizeObserver === 'function') {
+                            var resizeObserver = new ResizeObserver(function() {
+                                if (fitMode) {
+                                    fitToViewport();
+                                }
+                            });
+                            resizeObserver.observe(viewport);
+                        }
 
                         viewerHeader.appendChild(infoBar);
                         viewerHeader.appendChild(exportButton);
-                        viewerHeader.appendChild(resetZoomButton);
+                        viewerHeader.appendChild(fitButton);
+                        viewerHeader.appendChild(zoom1to1Button);
                         root.appendChild(viewerHeader);
 
                         viewport.appendChild(canvas);
