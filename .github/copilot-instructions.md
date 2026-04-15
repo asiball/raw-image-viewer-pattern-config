@@ -16,12 +16,14 @@ There is no way to run a single test in isolation — the test runner (`@vscode/
 This is a single-file VS Code extension (`src/extension.ts`) with no external runtime dependencies.
 
 **Data flow:**
+
 1. `RawImageEditorProvider` (implements `CustomReadonlyEditorProvider`) opens a file and creates a `WebviewPanel`.
 2. The webview HTML — including all rendering logic — is generated inline by `getWebviewHtml()` as a template string. There are no separate HTML/CSS/JS asset files.
 3. The extension reads the `.rawimagerc` config via `findConfig()` (walks up the directory tree from the file's location, like `.editorconfig`), then sends a `render` message to the webview via `postMessage`.
 4. The webview uses `fetch()` on the VS Code webview URI to load the binary file, then renders pixels onto an HTML5 `<canvas>` using the format specified in the config.
 
 **Message protocol (extension ↔ webview):**
+
 - Webview → extension: `{ type: 'ready' }` (sent on interval until acknowledged)
 - Extension → webview: `{ type: 'render', config, fileUri, fileSize }` or `{ type: 'error', message }`
 
