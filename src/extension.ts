@@ -166,7 +166,8 @@ export function appendRawImageChunk(
     }
 }
 
-type GrayscaleStreamFormat = 'gray8' | 'gray16le' | 'gray16be' | 'depth16';
+const grayscaleStreamFormats = ['gray8', 'gray16le', 'gray16be', 'depth16'] as const;
+type GrayscaleStreamFormat = (typeof grayscaleStreamFormats)[number];
 
 interface GrayDecodeState {
     format: GrayscaleStreamFormat;
@@ -1115,6 +1116,7 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         const vscode = acquireVsCodeApi();
         const decodeRawImageToRgba = ${decodeRawImageToRgba.toString()};
         const streamDecodableFormats = new Set(${JSON.stringify(streamDecodableFormats)});
+        const grayscaleStreamFormats = new Set(${JSON.stringify(grayscaleStreamFormats)});
         var readyTimer = null;
         var startupTimeout = null;
         var activeAbortController = null;
@@ -1243,7 +1245,7 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         var imageData = ctx.createImageData(width, height);
                         var pixels = imageData.data;
 
-                        var isGrayscale = (format === 'gray8' || format === 'gray16le' || format === 'gray16be' || format === 'depth16');
+                        var isGrayscale = grayscaleStreamFormats.has(format);
                         var isFloat32 = (format === 'float32');
                         var rawGray = null;
                         var grayMinValue = 0;
@@ -1422,15 +1424,22 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             var capturedIsFloat = isFloatGray;
                             var rafPending = false;
 
+                            function readSliderVal(slider) {
+                                return capturedIsFloat ? parseFloat(slider.value) : parseInt(slider.value, 10);
+                            }
+                            function fmtSliderVal(val) {
+                                return capturedIsFloat ? val.toFixed(3) : String(val);
+                            }
+
                             function scheduleWindowRender() {
                                 if (!rafPending) {
                                     rafPending = true;
                                     requestAnimationFrame(function() {
                                         rafPending = false;
-                                        var wMin = capturedIsFloat ? parseFloat(minSlider.value) : parseInt(minSlider.value, 10);
-                                        var wMax = capturedIsFloat ? parseFloat(maxSlider.value) : parseInt(maxSlider.value, 10);
-                                        minValSpan.textContent = capturedIsFloat ? wMin.toFixed(3) : String(wMin);
-                                        maxValSpan.textContent = capturedIsFloat ? wMax.toFixed(3) : String(wMax);
+                                        var wMin = readSliderVal(minSlider);
+                                        var wMax = readSliderVal(maxSlider);
+                                        minValSpan.textContent = fmtSliderVal(wMin);
+                                        maxValSpan.textContent = fmtSliderVal(wMax);
                                         applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data);
                                         capturedCtx.putImageData(capturedImageData, 0, 0);
                                     });
@@ -1438,14 +1447,14 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             }
 
                             minSlider.addEventListener('input', function() {
-                                var wMin = capturedIsFloat ? parseFloat(minSlider.value) : parseInt(minSlider.value, 10);
-                                var wMax = capturedIsFloat ? parseFloat(maxSlider.value) : parseInt(maxSlider.value, 10);
+                                var wMin = readSliderVal(minSlider);
+                                var wMax = readSliderVal(maxSlider);
                                 if (wMin > wMax) { minSlider.value = String(wMax); }
                                 scheduleWindowRender();
                             });
                             maxSlider.addEventListener('input', function() {
-                                var wMin = capturedIsFloat ? parseFloat(minSlider.value) : parseInt(minSlider.value, 10);
-                                var wMax = capturedIsFloat ? parseFloat(maxSlider.value) : parseInt(maxSlider.value, 10);
+                                var wMin = readSliderVal(minSlider);
+                                var wMax = readSliderVal(maxSlider);
                                 if (wMax < wMin) { maxSlider.value = String(wMin); }
                                 scheduleWindowRender();
                             });
