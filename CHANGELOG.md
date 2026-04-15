@@ -6,6 +6,20 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-04-15
+
+### Added
+
+- **Fit to Screen** toggle button in the viewer toolbar — keeps the image fitted to the viewport (enabled by default); clicking again disables auto-fit so you can freely zoom and pan
+- **1:1** button to jump to 100 % (pixel-exact) zoom at any time
+- Automatic re-fit on viewport resize when Fit mode is active
+- Double-click on the canvas re-enables Fit mode
+
+### Changed
+
+- The former **Reset Zoom** button has been replaced by the **Fit** toggle and the **1:1** button for clearer semantics
+- Manual zoom (Ctrl+Scroll) or drag-pan now automatically disables Fit mode so the user's manual position is preserved
+
 ## [0.0.2] - 2026-03-12
 
 ### Added
