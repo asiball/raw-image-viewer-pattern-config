@@ -3,6 +3,11 @@ name: Build VSIX
 on:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      release_tag:
+        description: Optional release tag to validate against package.json version
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -29,6 +34,17 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Validate release metadata
+        id: release-metadata
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          node scripts/validate-release-version.mjs
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "vsix_name=rawviewer-${version}.vsix" >> "$GITHUB_OUTPUT"
+
       - name: Install dependencies
         run: npm ci
 
@@ -41,12 +57,11 @@ jobs:
       - name: Package extension
         shell: bash
         run: |
-          version="$(node -p "require('./package.json').version")"
-          npx --yes @vscode/vsce package --no-yarn --out "rawviewer-${version}.vsix"
+          npx --yes @vscode/vsce package --no-yarn --out "${{ steps.release-metadata.outputs.vsix_name }}"
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v4
         with:
           name: rawviewer-vsix
-          path: rawviewer-*.vsix
+          path: ${{ steps.release-metadata.outputs.vsix_name }}
           if-no-files-found: error

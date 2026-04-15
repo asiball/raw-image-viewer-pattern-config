@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     uses: ./.github/workflows/build-vsix.yml
+    with:
+      release_tag: ${{ github.ref_name }}
     permissions:
       contents: read
 
