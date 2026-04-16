@@ -35,8 +35,9 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" rawviewer-*.vsix \
+          gh release create -R "$GH_REPO" "$RELEASE_TAG" rawviewer-*.vsix \
             --generate-notes \
             --target "$GITHUB_SHA"
