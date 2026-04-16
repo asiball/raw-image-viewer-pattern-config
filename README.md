@@ -79,12 +79,9 @@ Every push and pull request runs the **Build VSIX** workflow, which packages the
 
 ### GitHub Releases (automated)
 
-Pushing a `v*` tag to `main` triggers the **Release** workflow, which builds the `.vsix`, creates a GitHub Release, and attaches the file as a release asset.
+The **Release** workflow can be started from the GitHub Actions UI or GitHub Mobile. Enter a tag like `v0.1.0`, and the workflow will build the `.vsix`, create a GitHub Release, and attach the file as a release asset.
 
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
+It also still runs automatically when you push a `v*` tag to `main`.
 
 Download any release from the [Releases](../../releases) page and install with **Extensions: Install from VSIX...**.
 
