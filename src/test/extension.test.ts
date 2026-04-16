@@ -100,11 +100,13 @@ suite('Extension Test Suite', () => {
   });
 
   test('getSuggestedPngSaveUri swaps the extension for png', () => {
+    const isWindows = process.platform === 'win32';
+    const filePath = isWindows ? 'D:\\repo\\images\\frame.gray' : '/repo/images/frame.gray';
+    const expectedPath = isWindows ? 'D:\\repo\\images\\frame.png' : '/repo/images/frame.png';
+
     assert.strictEqual(
-      path
-        .normalize(getSuggestedPngSaveUri(vscode.Uri.file('D:\\repo\\images\\frame.gray')).fsPath)
-        .toLowerCase(),
-      path.normalize('D:\\repo\\images\\frame.png').toLowerCase()
+      path.normalize(getSuggestedPngSaveUri(vscode.Uri.file(filePath)).fsPath).toLowerCase(),
+      path.normalize(expectedPath).toLowerCase()
     );
   });
 
