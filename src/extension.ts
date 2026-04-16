@@ -627,17 +627,31 @@ function isRawImageConfigRecord(value: unknown): value is Record<string, unknown
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function validateInteger(
+  value: unknown,
+  property: string,
+  source: string,
+  min: number,
+  optional: boolean = false,
+  isConfigPath: boolean = false
+): number | undefined {
+  if (optional && value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min) {
+    const label = min === 1 ? 'positive' : 'non-negative';
+    const prefix = isConfigPath ? `Invalid .rawimagerc at "${source}"` : `Invalid ${source}`;
+    throw new Error(`${prefix}: "${property}" must be a ${label} integer.`);
+  }
+  return value as number;
+}
+
 function validatePositiveInteger(
   value: unknown,
   property: 'width' | 'height',
   configPath: string
 ): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-    throw new Error(
-      `Invalid .rawimagerc at "${configPath}": "${property}" must be a positive integer.`
-    );
-  }
-  return value;
+  return validateInteger(value, property, configPath, 1, false, true) as number;
 }
 
 function validateNonNegativeInteger(
@@ -645,12 +659,7 @@ function validateNonNegativeInteger(
   property: 'headerSize',
   configPath: string
 ): number {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new Error(
-      `Invalid .rawimagerc at "${configPath}": "${property}" must be a non-negative integer.`
-    );
-  }
-  return value;
+  return validateInteger(value, property, configPath, 0, false, true) as number;
 }
 
 function validateOptionalPositiveInteger(
@@ -658,13 +667,7 @@ function validateOptionalPositiveInteger(
   property: 'defaultWidth' | 'defaultHeight',
   source: string
 ): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
-    throw new Error(`Invalid ${source}: "${property}" must be a positive integer.`);
-  }
-  return value;
+  return validateInteger(value, property, source, 1, true, false);
 }
 
 function validateOptionalNonNegativeInteger(
@@ -672,13 +675,7 @@ function validateOptionalNonNegativeInteger(
   property: 'defaultHeaderSize',
   source: string
 ): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
-    throw new Error(`Invalid ${source}: "${property}" must be a non-negative integer.`);
-  }
-  return value;
+  return validateInteger(value, property, source, 0, true, false);
 }
 
 function validateOptionalFormat(
