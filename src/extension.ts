@@ -1188,6 +1188,12 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
             font-size: 13px;
             font-family: 'Consolas', 'Courier New', monospace;
         }
+        .pixel-info-bar {
+            color: #9cdcfe;
+            font-size: 13px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            min-height: 1.2em;
+        }
         .action-button {
             appearance: none;
             border: 1px solid #1177bb;
@@ -1201,6 +1207,10 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         }
         .action-button:hover {
             background: #1177bb;
+        }
+        .action-button.active {
+            background: #1177bb;
+            border-color: #9cdcfe;
         }
         .error-box {
             background: #5a1d1d;
@@ -1238,10 +1248,50 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #444; }
         th { color: #9cdcfe; }
         canvas {
-            max-width: 100%;
             image-rendering: pixelated;
             border: 1px solid #444;
             box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            display: block;
+        }
+        .canvas-viewport {
+            overflow: hidden;
+            cursor: grab;
+            position: relative;
+            align-self: stretch;
+            height: calc(100vh - 120px);
+            min-height: 200px;
+            background: #111;
+            border: 1px solid #333;
+            border-radius: 4px;
+        }
+        .canvas-viewport.panning {
+            cursor: grabbing;
+        }
+        .zoom-indicator {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background: rgba(0, 0, 0, 0.6);
+            color: #9cdcfe;
+            font-size: 11px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            padding: 2px 6px;
+            border-radius: 3px;
+            pointer-events: none;
+            user-select: none;
+        }
+        .zoom-hint {
+            position: absolute;
+            bottom: 8px;
+            left: 8px;
+            background: rgba(0, 0, 0, 0.5);
+            color: #888;
+            font-size: 10px;
+            font-family: 'Consolas', 'Courier New', monospace;
+            padding: 2px 6px;
+            border-radius: 3px;
+            pointer-events: none;
+            user-select: none;
         }
         .window-controls {
             display: flex;
@@ -1553,10 +1603,183 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                             vscode.postMessage({ type: 'savePng', dataUrl: canvas.toDataURL('image/png') });
                         });
 
+                        var fitButton = document.createElement('button');
+                        fitButton.type = 'button';
+                        fitButton.className = 'action-button active';
+                        fitButton.textContent = 'Fit';
+
+                        var zoom1to1Button = document.createElement('button');
+                        zoom1to1Button.type = 'button';
+                        zoom1to1Button.className = 'action-button';
+                        zoom1to1Button.textContent = '1:1';
+
+                        var viewport = document.createElement('div');
+                        viewport.className = 'canvas-viewport';
+
+                        var zoomIndicator = document.createElement('div');
+                        zoomIndicator.className = 'zoom-indicator';
+                        zoomIndicator.textContent = '100%';
+
+                        var zoomHint = document.createElement('div');
+                        zoomHint.className = 'zoom-hint';
+                        zoomHint.textContent = 'Ctrl+Scroll: zoom \u00b7 Drag: pan \u00b7 Dbl-click: fit';
+
+                        canvas.style.transformOrigin = '0 0';
+
+                        var panX = 0;
+                        var panY = 0;
+                        var zoom = 1.0;
+                        var fitMode = true;
+                        var isPanning = false;
+                        var dragStartX = 0;
+                        var dragStartY = 0;
+                        var dragStartPanX = 0;
+                        var dragStartPanY = 0;
+
+                        function applyTransform() {
+                            canvas.style.transform = 'translate(' + panX + 'px, ' + panY + 'px) scale(' + zoom + ')';
+                            zoomIndicator.textContent = Math.round(zoom * 100) + '%';
+                        }
+
+                        function fitToViewport() {
+                            var vw = viewport.clientWidth;
+                            var vh = viewport.clientHeight;
+                            if (vw > 0 && vh > 0 && canvas.width > 0 && canvas.height > 0) {
+                                zoom = Math.min(vw / canvas.width, vh / canvas.height);
+                                panX = (vw - canvas.width * zoom) / 2;
+                                panY = (vh - canvas.height * zoom) / 2;
+                            } else {
+                                zoom = 1;
+                                panX = 0;
+                                panY = 0;
+                            }
+                            applyTransform();
+                        }
+
+                        function setFitMode(enabled) {
+                            fitMode = enabled;
+                            if (enabled) {
+                                fitButton.classList.add('active');
+                                fitToViewport();
+                            } else {
+                                fitButton.classList.remove('active');
+                            }
+                        }
+
+                        fitButton.addEventListener('click', function() {
+                            setFitMode(!fitMode);
+                        });
+
+                        zoom1to1Button.addEventListener('click', function() {
+                            setFitMode(false);
+                            zoom = 1.0;
+                            var vw = viewport.clientWidth;
+                            var vh = viewport.clientHeight;
+                            panX = (vw - canvas.width) / 2;
+                            panY = (vh - canvas.height) / 2;
+                            applyTransform();
+                        });
+
+                        viewport.addEventListener('wheel', function(e) {
+                            if (!e.ctrlKey) { return; }
+                            e.preventDefault();
+                            fitMode = false;
+                            fitButton.classList.remove('active');
+                            var rect = viewport.getBoundingClientRect();
+                            var cx = (e.clientX - rect.left - panX) / zoom;
+                            var cy = (e.clientY - rect.top - panY) / zoom;
+                            var factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+                            zoom = Math.max(0.01, Math.min(32, zoom * factor));
+                            panX = (e.clientX - rect.left) - cx * zoom;
+                            panY = (e.clientY - rect.top) - cy * zoom;
+                            applyTransform();
+                        }, { passive: false });
+
+                        viewport.addEventListener('mousedown', function(e) {
+                            if (e.button !== 0) { return; }
+                            isPanning = true;
+                            dragStartX = e.clientX;
+                            dragStartY = e.clientY;
+                            dragStartPanX = panX;
+                            dragStartPanY = panY;
+                            viewport.classList.add('panning');
+                            e.preventDefault();
+                        });
+
+                        window.addEventListener('mousemove', function(e) {
+                            if (!isPanning) { return; }
+                            var dx = e.clientX - dragStartX;
+                            var dy = e.clientY - dragStartY;
+                            if (fitMode && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
+                                fitMode = false;
+                                fitButton.classList.remove('active');
+                            }
+                            panX = dragStartPanX + dx;
+                            panY = dragStartPanY + dy;
+                            applyTransform();
+                        });
+
+                        window.addEventListener('mouseup', function() {
+                            if (isPanning) {
+                                isPanning = false;
+                                viewport.classList.remove('panning');
+                            }
+                        });
+
+                        viewport.addEventListener('dblclick', function() {
+                            setFitMode(true);
+                        });
+
+                        if (typeof ResizeObserver === 'function') {
+                            var resizeObserver = new ResizeObserver(function() {
+                                if (fitMode) {
+                                    fitToViewport();
+                                }
+                            });
+                            resizeObserver.observe(viewport);
+                        }
+
                         viewerHeader.appendChild(infoBar);
                         viewerHeader.appendChild(exportButton);
+                        viewerHeader.appendChild(fitButton);
+                        viewerHeader.appendChild(zoom1to1Button);
                         root.appendChild(viewerHeader);
-                        root.appendChild(canvas);
+
+                        viewport.appendChild(canvas);
+                        viewport.appendChild(zoomIndicator);
+                        viewport.appendChild(zoomHint);
+                        root.appendChild(viewport);
+
+                        requestAnimationFrame(fitToViewport);
+
+                        var pixelInfoBar = document.createElement('div');
+                        pixelInfoBar.className = 'pixel-info-bar';
+                        root.appendChild(pixelInfoBar);
+
+                        canvas.addEventListener('mousemove', function(e) {
+                            var rect = canvas.getBoundingClientRect();
+                            var scaleX = canvas.width / rect.width;
+                            var scaleY = canvas.height / rect.height;
+                            var px = Math.floor((e.clientX - rect.left) * scaleX);
+                            var py = Math.floor((e.clientY - rect.top) * scaleY);
+                            if (px < 0 || px >= width || py < 0 || py >= height) {
+                                pixelInfoBar.textContent = '';
+                                return;
+                            }
+                            var text = '(' + px + ', ' + py + ')';
+                            if (rawGray !== null) {
+                                var rawVal = rawGray[py * width + px];
+                                text += '  Gray: ' + (isFloatGray ? rawVal.toFixed(4) : rawVal);
+                            } else {
+                                var idx4 = (py * width + px) * 4;
+                                text += '  R: ' + imageData.data[idx4] + '  G: ' + imageData.data[idx4 + 1] + '  B: ' + imageData.data[idx4 + 2];
+                            }
+                            pixelInfoBar.textContent = text;
+                        });
+
+                        canvas.addEventListener('mouseleave', function() {
+                            pixelInfoBar.textContent = '';
+                        });
 
                         if (rawGray !== null) {
                             var totalPx = width * height;
