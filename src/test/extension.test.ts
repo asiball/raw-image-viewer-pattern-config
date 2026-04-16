@@ -81,40 +81,55 @@ suite('Extension Test Suite', () => {
   });
 
   test('getLocalResourceRoots includes config ancestor', () => {
-    const roots = getLocalResourceRoots(
-      vscode.Uri.file('D:\\repo\\images\\nested\\frame.raw'),
-      'D:\\repo\\images\\.rawimagerc'
-    );
+    const isWindows = process.platform === 'win32';
+    const filePath = isWindows
+      ? 'D:\\repo\\images\\nested\\frame.raw'
+      : '/repo/images/nested/frame.raw';
+    const configPath = isWindows ? 'D:\\repo\\images\\.rawimagerc' : '/repo/images/.rawimagerc';
+    const roots = getLocalResourceRoots(vscode.Uri.file(filePath), configPath);
 
     assert.deepStrictEqual(
       roots.map((root) => path.normalize(root.fsPath).toLowerCase()),
       [
-        path.normalize('D:\\repo\\images\\nested').toLowerCase(),
-        path.normalize('D:\\repo\\images').toLowerCase(),
+        path
+          .normalize(isWindows ? 'D:\\repo\\images\\nested' : '/repo/images/nested')
+          .toLowerCase(),
+        path.normalize(isWindows ? 'D:\\repo\\images' : '/repo/images').toLowerCase(),
       ]
     );
   });
 
   test('getSuggestedPngSaveUri swaps the extension for png', () => {
+    const isWindows = process.platform === 'win32';
+    const filePath = isWindows ? 'D:\\repo\\images\\frame.gray' : '/repo/images/frame.gray';
+    const expectedPath = isWindows ? 'D:\\repo\\images\\frame.png' : '/repo/images/frame.png';
+
     assert.strictEqual(
-      path
-        .normalize(getSuggestedPngSaveUri(vscode.Uri.file('D:\\repo\\images\\frame.gray')).fsPath)
-        .toLowerCase(),
-      path.normalize('D:\\repo\\images\\frame.png').toLowerCase()
+      path.normalize(getSuggestedPngSaveUri(vscode.Uri.file(filePath)).fsPath).toLowerCase(),
+      path.normalize(expectedPath).toLowerCase()
     );
   });
 
   test('getConfigSearchDirectories walks from file directory to root', () => {
+    const isWindows = process.platform === 'win32';
+    const filePath = isWindows
+      ? 'D:\\repo\\images\\nested\\frame.raw'
+      : '/repo/images/nested/frame.raw';
     assert.deepStrictEqual(
-      getConfigSearchDirectories('D:\\repo\\images\\nested\\frame.raw').map((dir) =>
-        path.normalize(dir).toLowerCase()
-      ),
-      [
-        path.normalize('D:\\repo\\images\\nested').toLowerCase(),
-        path.normalize('D:\\repo\\images').toLowerCase(),
-        path.normalize('D:\\repo').toLowerCase(),
-        path.normalize('D:\\').toLowerCase(),
-      ]
+      getConfigSearchDirectories(filePath).map((dir) => path.normalize(dir).toLowerCase()),
+      isWindows
+        ? [
+            path.normalize('D:\\repo\\images\\nested').toLowerCase(),
+            path.normalize('D:\\repo\\images').toLowerCase(),
+            path.normalize('D:\\repo').toLowerCase(),
+            path.normalize('D:\\').toLowerCase(),
+          ]
+        : [
+            path.normalize('/repo/images/nested').toLowerCase(),
+            path.normalize('/repo/images').toLowerCase(),
+            path.normalize('/repo').toLowerCase(),
+            path.normalize('/').toLowerCase(),
+          ]
     );
   });
 
