@@ -9,7 +9,7 @@
     "url": "https://github.com/asiball/vscode-rawimage-viewer"
   },
   "engines": {
-    "vscode": "^1.110.0"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Other"
@@ -133,15 +133,15 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
-    "@types/vscode": "^1.110.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
     "eslint": "^9.39.3",
     "globals": "^16.4.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.56.1",
-    "@vscode/test-cli": "^0.0.12",
-    "@vscode/test-electron": "^2.5.2"
+    "typescript-eslint": "^8.56.1"
   }
 }

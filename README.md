@@ -1,29 +1,21 @@
 # Raw Image Viewer
 
-A VS Code extension that displays raw binary image files directly in the editor using a canvas-based renderer.
+この VS Code 拡張機能は、バイナリ形式の RAW 画像ファイルをエディタ上で直接表示するためのツールです。Canvas ベースのレンダラーを使用し、多彩なピクセルフォーマットに対応しています。
 
-## Features
+## 特徴
 
-- Opens raw binary image files (`.raw`, `.bin`, `.data`, `.img`, `.gray`, `.yuv`) as images
-- Configurable via a `.rawimagerc` file (searched from the file's directory up to the filesystem root, similar to `.editorconfig`)
-- Falls back to workspace settings and filename hints when `.rawimagerc` is missing
-- Provides schema-backed autocomplete and validation for `.rawimagerc` in VS Code
-- Right-click any file in the Explorer → **Open as Raw Image** to view it with this extension
-- Supports multiple pixel formats
-- Lets you export the rendered canvas as a PNG from the custom editor
+- バイナリ画像ファイル（`.raw`, `.bin`, `.data`, `.img`, `.gray`, `.yuv`）を画像として表示。
+- `.rawimagerc` ファイルによる詳細なレンダリング設定（ディレクトリ階層を遡って検索）。
+- `.rawimagerc` がない場合でも、ファイル名（例: `frame_1920x1080_rgb24.raw`）やワークスペース設定から推論。
+- `.rawimagerc` の編集時にスキーマベースのオートコンプリートとバリデーションを提供。
+- エクスプローラーの右クリックメニュー「**Open as Raw Image**」から任意のファイルを開くことが可能。
+- 各種ピクセルフォーマット（RGB, BGR, グレースケール, YUV, Float32 等）をサポート。
+- レンダリングされた画像を PNG としてエクスポート可能。
+- ズーム（Ctrl+スクロール）、パン（ドラッグ）、ウィンドウレベル調整（グレースケール/Float32時）に対応。
 
-## Configuration: `.rawimagerc`
+## 設定方法: `.rawimagerc`
 
-Create a `.rawimagerc` file in the same directory as your binary file, or any parent directory. The nearest file found wins.
-
-The extension contributes a JSON schema for `.rawimagerc`, so VS Code can offer autocomplete and validation for the supported fields and pixel formats.
-
-If `.rawimagerc` is not present, the extension can still render files by combining:
-
-1. Filename inference from patterns like `frame_1920x1080_rgb24.raw`
-2. Workspace settings such as `rawviewer.defaultWidth`, `rawviewer.defaultHeight`, `rawviewer.defaultHeaderSize`, and `rawviewer.defaultFormat`
-
-`.rawimagerc` always takes precedence over these fallbacks.
+バイナリファイルと同じディレクトリ、または親ディレクトリに `.rawimagerc` ファイルを作成して設定を記述します。
 
 ```json
 {
@@ -34,63 +26,46 @@ If `.rawimagerc` is not present, the extension can still render files by combini
 }
 ```
 
-| Field        | Type    | Default   | Description                                  |
-| ------------ | ------- | --------- | -------------------------------------------- |
-| `width`      | integer | required  | Image width in pixels                        |
-| `height`     | integer | required  | Image height in pixels                       |
-| `headerSize` | integer | `0`       | Number of bytes to skip at the start of file |
-| `format`     | enum    | `"rgb24"` | Pixel format (see table below)               |
+### 設定項目
 
-### Supported Pixel Formats
+| フィールド | 型 | デフォルト | 説明 |
+| :--- | :--- | :--- | :--- |
+| `width` | integer | (必須) | 画像の幅（ピクセル） |
+| `height` | integer | (必須) | 画像の高さ（ピクセル） |
+| `headerSize` | integer | `0` | ファイル先頭でスキップするバイト数 |
+| `format` | enum | `"rgb24"` | ピクセルフォーマット（下記参照） |
 
-| Format     | Description                      | Bytes/pixel |
-| ---------- | -------------------------------- | ----------- |
-| `gray8`    | 8-bit grayscale                  | 1           |
-| `gray16le` | 16-bit grayscale (little-endian) | 2           |
-| `gray16be` | 16-bit grayscale (big-endian)    | 2           |
-| `rgb24`    | 24-bit RGB                       | 3           |
-| `bgr24`    | 24-bit BGR                       | 3           |
-| `rgba32`   | 32-bit RGBA                      | 4           |
-| `bgra32`   | 32-bit BGRA                      | 4           |
-| `yuv420p`  | Planar YUV 4:2:0                 | 1.5         |
-| `nv12`     | Semi-planar YUV 4:2:0            | 1.5         |
-| `yuyv422`  | Packed YUV 4:2:2                 | 2           |
-| `float32`  | 32-bit float grayscale           | 4           |
-| `depth16`  | 16-bit depth (little-endian)     | 2           |
+### サポートされているピクセルフォーマット
 
-For `yuv420p` and `nv12`, use even image widths and heights. `yuyv422` requires an even width. `float32` and `depth16` display with auto window/level controls; you can adjust the min/max range after rendering.
+| フォーマット | 説明 | 1ピクセルあたりのバイト数 |
+| :--- | :--- | :--- |
+| `gray8` | 8-bit グレースケール | 1 |
+| `gray16le` | 16-bit グレースケール (リトルエンディアン) | 2 |
+| `gray16be` | 16-bit グレースケール (ビッグエンディアン) | 2 |
+| `rgb24` | 24-bit RGB | 3 |
+| `bgr24` | 24-bit BGR | 3 |
+| `rgba32` | 32-bit RGBA | 4 |
+| `bgra32` | 32-bit BGRA | 4 |
+| `yuv420p` | Planar YUV 4:2:0 | 1.5 |
+| `nv12` | Semi-planar YUV 4:2:0 | 1.5 |
+| `yuyv422` | Packed YUV 4:2:2 | 2 |
+| `float32` | 32-bit float グレースケール | 4 |
+| `depth16` | 16-bit depth (リトルエンディアン) | 2 |
 
-## Usage
+- `yuv420p` と `nv12` は、画像の幅と高さが偶数である必要があります。
+- `yuyv422` は、画像の幅が偶数である必要があります。
+- `float32` と `depth16` では、表示後にスライダーで最小/最大範囲（ウィンドウレベル）を調整できます。
 
-1. Place a `.rawimagerc` file in the directory containing your binary image (or a parent directory).
-2. Open a `.raw`, `.bin`, `.data`, `.img`, `.gray`, or `.yuv` file in VS Code — it will automatically render as an image.
-3. For other file extensions, right-click the file in the Explorer and choose **Open as Raw Image**.
-4. Click **Export PNG** above the canvas to save the current rendering as a `.png` file.
+## 使い方
 
-## GitHub Actions Workflows
+1. 画像ファイルと同じディレクトリに `.rawimagerc` を配置するか、ワークスペース設定でデフォルト値を設定します。
+2. 対応する拡張子（`.raw`, `.bin` 等）のファイルを開くと、自動的にレンダラーが起動します。
+3. その他のファイルは、右クリックから「**Open as Raw Image**」を選択してください。
+4. キャンバス上部の「**Export PNG**」ボタンで、現在の表示を `.png` ファイルとして保存できます。
 
-### Build VSIX (artifact)
+## デフォルト設定（フォールバック）
 
-Every push and pull request runs the **Build VSIX** workflow, which packages the extension and uploads a `rawviewer-vsix` artifact. This does not publish anything to the Visual Studio Marketplace.
-
-1. Push your branch to GitHub, or trigger the workflow manually from the **Actions** tab.
-2. Download the `rawviewer-vsix` artifact from the workflow run.
-3. Install it in VS Code with **Extensions: Install from VSIX...**.
-
-### GitHub Releases (automated)
-
-Pushing a `v*` tag to `main` triggers the **Release** workflow, which builds the `.vsix`, creates a GitHub Release, and attaches the file as a release asset.
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-Download any release from the [Releases](../../releases) page and install with **Extensions: Install from VSIX...**.
-
-## Fallback Settings
-
-Add these workspace settings if you want a project-wide fallback when `.rawimagerc` is absent:
+`.rawimagerc` が存在しない場合に備え、以下の設定をワークスペース設定（`settings.json`）に追加できます。
 
 ```json
 {
@@ -102,19 +77,30 @@ Add these workspace settings if you want a project-wide fallback when `.rawimage
 }
 ```
 
-With `rawviewer.inferFromFilename` enabled, a file named `capture_1280x720_gray8.raw` can supply width, height, and format automatically. Any missing pieces are filled from the workspace defaults above.
+`rawviewer.inferFromFilename` が `true` の場合、`capture_1280x720_gray8.raw` のようなファイル名から自動的に幅、高さ、フォーマットを推論します。
 
-## Example
+## 開発者向け
 
-Suppose you have a 320×240 8-bit grayscale image at `/project/images/frame.raw` with no header. Create `/project/images/.rawimagerc`:
+### セットアップ
 
-```json
-{
-  "width": 320,
-  "height": 240,
-  "headerSize": 0,
-  "format": "gray8"
-}
+リポジトリをクローンした後、以下のコマンドを実行して依存関係をインストールし、初回ビルドを行ってください。
+
+```bash
+npm install
+npm run compile
 ```
 
-Open `frame.raw` in VS Code and the image will be displayed on a canvas.
+### デバッグ実行
+
+VS Code でこのプロジェクトを開き、`F5` キーを押すと、別の VS Code ウィンドウ（拡張機能開発ホスト）が立ち上がります。
+
+- デバッグ開始時に `test-data/generate_images.py` が自動的に走り、テスト用のバイナリ画像が生成されます。
+- `test-data/` フォルダが自動的に開かれるので、生成された `.raw` ファイルなどを開いて動作を確認できます。
+
+### 手動での画像生成
+
+手動でテスト画像を生成する場合は、以下のコマンドを実行してください。
+
+```bash
+python3 test-data/generate_images.py
+```

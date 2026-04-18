@@ -3,3 +3,18 @@ dist
 node_modules
 .vscode-test/
 *.vsix
+
+# TypeScript
+*.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test Data Binaries
+test-data/**/*.raw
+test-data/**/*.gray
+test-data/**/*.bin
+test-data/**/*.data
+test-data/**/*.img
+test-data/**/*.yuv

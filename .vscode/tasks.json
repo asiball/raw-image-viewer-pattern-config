@@ -15,6 +15,24 @@
         "kind": "build",
         "isDefault": true
       }
+    },
+    {
+      "label": "generate-test-images",
+      "type": "shell",
+      "command": "python3 test-data/generate_images.py",
+      "presentation": {
+        "reveal": "silent",
+        "close": true
+      },
+      "group": "build"
+    },
+    {
+      "label": "prepare-debug",
+      "dependsOn": [
+        "npm: watch",
+        "generate-test-images"
+      ],
+      "group": "build"
     }
   ]
 }

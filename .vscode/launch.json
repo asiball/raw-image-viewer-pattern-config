@@ -15,7 +15,7 @@
         "${workspaceFolder}/test-data"
       ],
       "outFiles": ["${workspaceFolder}/out/**/*.js"],
-      "preLaunchTask": "${defaultBuildTask}"
+      "preLaunchTask": "prepare-debug"
     }
   ]
 }
