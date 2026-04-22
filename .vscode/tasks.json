@@ -28,10 +28,7 @@
     },
     {
       "label": "prepare-debug",
-      "dependsOn": [
-        "npm: watch",
-        "generate-test-images"
-      ],
+      "dependsOn": ["npm: watch", "generate-test-images"],
       "group": "build"
     }
   ]
