@@ -1,62 +1,62 @@
-# Specification: Raw Image Viewer (VS Code Extension)
+# 基本仕様書: Raw Image Viewer (VS Code 拡張機能)
 
-## 1. Overview
-The **Raw Image Viewer** is a Visual Studio Code extension designed to visualize raw binary image data directly within the editor. It provides a custom editor using a Canvas-based webview to render pixel data based on user-defined configurations or automatic inference.
+## 1. 概要
+**Raw Image Viewer** は、VS Code エディタ内で生のバイナリ画像データ（Rawデータ）を可視化するための拡張機能です。Canvasベースの Webview を使用したカスタムエディタを提供し、ユーザー設定や自動推論に基づいてピクセルデータをレンダリングします。
 
-## 2. Core Features (Current)
+## 2. コア機能 (現在の実装)
 
-### 2.1. File Association
-The extension acts as a custom editor for the following file extensions by default:
+### 2.1. ファイルの関連付け
+デフォルトで以下の拡張子をカスタムエディタとして開きます。
 - `.raw`, `.bin`, `.data`, `.img`, `.gray`, `.yuv`
-- Users can manually open any file via the context menu: **"Open as Raw Image"**.
+- エクスプローラーのコンテキストメニューから **"Open as Raw Image"** を選択することで、任意のファイルを手動で開くことも可能です。
 
-### 2.2. Configuration Hierarchy
-To render a raw image correctly, the viewer needs metadata (width, height, format, etc.). It resolves these in the following order of precedence:
-1. **`.rawimagerc` (JSON)**: Searched from the file's directory upwards to the filesystem root.
-2. **Filename Inference**: Parses patterns like `name_1920x1080_rgb24.raw`.
-3. **Workspace Settings**: Fallback values defined in `rawviewer.defaultWidth`, `rawviewer.defaultHeight`, etc.
+### 2.2. 設定の優先順位
+画像を正しくレンダリングするために必要なメタデータ（幅、高さ、フォーマット等）は、以下の優先順位で解決されます。
+1. **`.rawimagerc` (JSON)**: ファイルのディレクトリからルートに向かって階層的に検索されます。
+2. **ファイル名からの推論**: `name_1920x1080_rgb24.raw` のようなパターンを解析します。
+3. **ワークスペース設定**: `rawviewer.defaultWidth` や `rawviewer.defaultHeight` などのデフォルト値。
 
-### 2.3. Supported Pixel Formats
-| Category | Format | Bytes/Pixel | Description |
+### 2.3. サポートされているピクセルフォーマット
+| カテゴリ | フォーマット | 1ピクセルあたりのバイト数 | 説明 |
 | :--- | :--- | :--- | :--- |
-| **Grayscale** | `gray8`, `gray16le`, `gray16be` | 1, 2 | 8-bit or 16-bit (LE/BE) |
-| **RGB/BGR** | `rgb24`, `bgr24`, `rgba32`, `bgra32` | 3, 4 | Interleaved color channels |
-| **YUV** | `yuv420p`, `nv12`, `yuyv422` | 1.5 - 2 | Planar or semi-planar YUV |
-| **Scientific** | `float32`, `depth16` | 4, 2 | Supports auto window/level adjustment |
+| **グレースケール** | `gray8`, `gray16le`, `gray16be` | 1, 2 | 8-bit または 16-bit (LE/BE) |
+| **RGB/BGR** | `rgb24`, `bgr24`, `rgba32`, `bgra32` | 3, 4 | インターリーブされたカラーチャンネル |
+| **YUV** | `yuv420p`, `nv12`, `yuyv422` | 1.5 - 2 | 平面 (Planar) または半平面 (Semi-planar) YUV |
+| **サイエンティフィック** | `float32`, `depth16` | 4, 2 | 自動ウィンドウ/レベル調整をサポート |
 
-### 2.4. Functionality
-- **Canvas Rendering**: Efficiently renders large binary files using HTML5 Canvas.
-- **PNG Export**: Allows users to save the current rendered view as a standard PNG file.
-- **JSON Schema**: Provides validation and IntelliSense for `.rawimagerc` files.
-
----
-
-## 3. Future Requirements (Planned)
-
-### 3.1. Interactive Viewing (Zoom & Pan)
-- **Zooming**: Support mouse wheel or UI buttons to zoom in/out (from 1% to 1000%+).
-- **Panning**: Support clicking and dragging to navigate large images when zoomed in.
-- **Interpolation Toggle**: Option to switch between "Nearest Neighbor" (for pixel-perfect inspection) and "Bilinear" (for smooth viewing).
-
-### 3.2. Pixel Inspection (Data Probe)
-- **Hover Info**: Display coordinates (x, y) and raw pixel values (e.g., R:255, G:128, B:0) at the mouse cursor position.
-- **Bit-depth Support**: Correctly display values for 16-bit, float, and YUV formats.
-
-### 3.3. Real-time Analytics
-- **Histogram**: Show the distribution of luminance or individual color channels.
-- **Image Statistics**: Compute and display Min, Max, Average, and Median values for the current view.
-
-### 3.4. Dynamic UI Controls
-- **Live Adjustment**: A sidebar or toolbar within the webview to change width, height, format, or header size without manually editing `.rawimagerc`.
-- **Endianness Toggle**: Quickly switch between Little Endian and Big Endian for multi-byte formats.
-- **Window/Level Sliders**: Interactive sliders for `float32` and `depth16` formats to adjust the visible range.
+### 2.4. 主要機能
+- **Canvas レンダリング**: HTML5 Canvas を使用して大きなバイナリファイルを効率的に描画。
+- **PNG エクスポート**: 現在レンダリングされている表示内容を PNG ファイルとして保存。
+- **JSON スキーマ**: `.rawimagerc` ファイルに対するバリデーションと IntelliSense の提供。
 
 ---
 
-## 4. Technical Architecture
-- **Extension Side**: Manages file access, configuration resolution, and provides the `CustomTextEditorProvider`.
-- **Webview Side**: 
-  - Receives binary data as `Uint8Array`.
-  - Implements format-specific decoders in JavaScript/TypeScript.
-  - Renders to a Canvas element.
-- **Communication**: Uses `postMessage` for bidirectional communication between the extension and the webview.
+## 3. 将来の要件 (計画中)
+
+### 3.1. インタラクティブな閲覧 (Zoom & Pan)
+- **ズーム**: マウスホイールや UI ボタンによる拡大・縮小（1% 〜 1000%以上）のサポート。
+- **パン (移動)**: 拡大時にクリック＆ドラッグで画像を移動。
+- **補間方法の切り替え**: 「最近傍補間 (Nearest Neighbor)」（ピクセル確認用）と「バイリニア補間 (Bilinear)」（滑らかな表示用）の切り替え。
+
+### 3.2. ピクセル情報のインスペクション (Data Probe)
+- **ホバー情報**: マウスカーソル位置の座標 (x, y) と生のピクセル値（例: R:255, G:128, B:0）を表示。
+- **各種フォーマットへの対応**: 16-bit, float, YUV フォーマットでも適切な値を表示。
+
+### 3.3. リアルタイム解析機能
+- **ヒストグラム**: 輝度または各カラーチャンネルの分布を表示。
+- **統計情報**: 現在の表示範囲における最小値、最大値、平均値、中央値の算出・表示。
+
+### 3.4. 動的な UI コントロール
+- **ライブ調整**: `.rawimagerc` を手動で編集することなく、Webview 上のツールバーから幅、高さ、フォーマット、ヘッダーサイズを動的に変更。
+- **エンディアン切り替え**: マルチバイトフォーマットにおいて Little Endian と Big Endian を即座に切り替え。
+- **ウィンドウ/レベルスライダー**: `float32` や `depth16` フォーマットにおいて、表示範囲を調整するためのインタラクティブなスライダー。
+
+---
+
+## 4. 技術アーキテクチャ
+- **拡張機能（Extension）側**: ファイルアクセス、設定の解決、`CustomTextEditorProvider` の管理を担当。
+- **Webview 側**: 
+  - バイナリデータを `Uint8Array` として受信。
+  - TypeScript によるフォーマット固有のデコーダーの実装。
+  - Canvas 要素へのレンダリング。
+- **通信**: `postMessage` を使用した拡張機能と Webview 間の双方向通信。
