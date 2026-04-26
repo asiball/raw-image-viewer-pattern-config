@@ -2,6 +2,10 @@
 
 A VS Code extension that displays raw binary image files directly in the editor using a canvas-based renderer.
 
+## Design Documents
+
+- [Basic design](docs/basic-design.md)
+
 ## Features
 
 - Opens raw binary image files (`.raw`, `.bin`, `.data`, `.img`, `.gray`, `.yuv`) as images

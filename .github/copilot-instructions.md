@@ -19,7 +19,7 @@ This is a single-file VS Code extension (`src/extension.ts`) with no external ru
 
 1. `RawImageEditorProvider` (implements `CustomReadonlyEditorProvider`) opens a file and creates a `WebviewPanel`.
 2. The webview HTML — including all rendering logic — is generated inline by `getWebviewHtml()` as a template string. There are no separate HTML/CSS/JS asset files.
-3. The extension reads the `.rawimagerc` config via `findConfig()` (walks up the directory tree from the file's location, like `.editorconfig`), then sends a `render` message to the webview via `postMessage`.
+3. The extension reads the `.rawimagerc` config via `findConfigPath()` (walks up the directory tree from the file's location, like `.editorconfig`), then sends a `render` message to the webview via `postMessage`.
 4. The webview uses `fetch()` on the VS Code webview URI to load the binary file, then renders pixels onto an HTML5 `<canvas>` using the format specified in the config.
 
 **Message protocol (extension ↔ webview):**
@@ -28,6 +28,14 @@ This is a single-file VS Code extension (`src/extension.ts`) with no external ru
 - Extension → webview: `{ type: 'render', config, fileUri, fileSize }` or `{ type: 'error', message }`
 
 **Startup timing:** The extension sets a 300 ms fallback timer to send `render` even if the `ready` handshake never arrives, and a 5 s timer to show a warning if no `ready` was received.
+
+## Spec-Driven Workflow
+
+- Read `docs/basic-design.md` first, then any more detailed design docs under `docs/` before changing behavior.
+- Treat the docs as the source of truth for implementation details; update the docs before code when behavior changes.
+- If a task is ambiguous or would change user-visible behavior, ask for clarification before coding.
+- Prefer adding or updating a design doc before making code changes that touch architecture, messages, file formats, or Webview behavior.
+- Keep implementation aligned with the documented flow, message schema, and constraints; do not invent new behavior silently.
 
 ## Key Conventions
 
