@@ -72,9 +72,17 @@ gh pr view <number>             # PR の詳細確認
 
 PR タイトルプレフィックス: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`
 
-`main` への直接プッシュは禁止。CI はすべての PR とプッシュに対して `npm run lint` と `npm run compile` を実行する。
+`main` への直接プッシュは禁止。CI はすべての PR とプッシュに対して `npm run lint`、`npm run compile`、`npm run format:check` を実行する。
 
 **コードを変更する場合は、変更を加える前にローカルブランチを作成すること。** 上記のブランチプレフィックスを使用し、AI エージェントの作業には `copilot/` を使用する。
+
+**ブランチをプッシュする前に必ず CI が通ることをローカルで確認すること。**
+
+```bash
+npm run lint && npm run compile && npm run format:check
+```
+
+フォーマット違反がある場合は `npm run format` で修正してからコミット・プッシュすること。CI が失敗した状態でブランチをプッシュしない。
 
 **ローカルのコード変更で止まらないこと。** AI エージェントがコードを変更した場合は、通常のフローを最後まで続けること: ローカルブランチ → コミット → ブランチのプッシュ → `main` を対象とした Pull Request のオープン。
 
