@@ -8,6 +8,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ### Added
 
+- **Pattern-based `.rawimagerc`** — configuration is now structured as a `patterns` object whose keys are glob patterns (like `.editorconfig`), enabling per-file or per-directory settings from a single config file
+- **`rawviewer.createConfig` command** — creates a `.rawimagerc` template in the current directory and opens it in the editor
+- **`float32` format** — 32-bit little-endian float grayscale with automatic window/level normalization
+- **`depth16` format** — 16-bit little-endian depth image with automatic window/level normalization
+- **Window/Level sliders** — interactive Min/Max sliders for grayscale, float32, and depth16 images; auto-initialised to the detected value range; Reset button restores the initial values
+- **Pixel value inspection** — status bar below the canvas shows cursor coordinates and per-format raw pixel values (RGB channels for color images; raw Gray value for grayscale/depth/float formats)
 - Manual GitHub Actions release dispatch so GitHub Mobile can publish releases without pushing tags
 - Release workflow support for both manual dispatch and `v*` tag pushes
 

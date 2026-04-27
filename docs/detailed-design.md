@@ -98,12 +98,12 @@ sequenceDiagram
 
 `render` メッセージのフィールド:
 
-| フィールド    | 型                         | 内容                                                                                  |
-| ------------- | -------------------------- | ------------------------------------------------------------------------------------- |
-| `config`      | `RawImageConfig` \| `null` | 解決済み設定。設定が見つからない場合は `null`                                         |
-| `configSource`| `string` \| `null`         | 設定の取得元（`"rawimagerc"` / `"filename"` / `"settings"` / `"filename+settings"`） |
-| `fileUri`     | `string`                   | Webview からアクセス可能な VS Code Webview URI                                        |
-| `fileSize`    | `number`                   | ファイルサイズ（バイト）                                                              |
+| フィールド     | 型                         | 内容                                                                                 |
+| -------------- | -------------------------- | ------------------------------------------------------------------------------------ |
+| `config`       | `RawImageConfig` \| `null` | 解決済み設定。設定が見つからない場合は `null`                                        |
+| `configSource` | `string` \| `null`         | 設定の取得元（`"rawimagerc"` / `"filename"` / `"settings"` / `"filename+settings"`） |
+| `fileUri`      | `string`                   | Webview からアクセス可能な VS Code Webview URI                                       |
+| `fileSize`     | `number`                   | ファイルサイズ（バイト）                                                             |
 
 ## 5. 設定仕様
 
@@ -111,22 +111,40 @@ sequenceDiagram
 
 ```json
 {
-  "width": 640,
-  "height": 480,
-  "headerSize": 0,
-  "format": "rgb24"
+  "patterns": {
+    "*": {
+      "width": 640,
+      "height": 480,
+      "format": "rgb24"
+    },
+    "**/thumbnails/*.bin": {
+      "width": 128,
+      "height": 128
+    }
+  }
 }
 ```
 
-必須項目:
+トップレベルに `patterns` オブジェクトが必須。キーはグロブパターン（`.editorconfig` 方式）、値はそのパターンに一致するファイルへの設定。複数パターンが一致した場合は後勝ちでマージされる。
 
-- `width`
-- `height`
+グロブ仕様:
 
-任意項目:
+- `*` — パスセパレータを含まない任意の文字列（単一セグメント）
+- `**` — 任意の文字列（パスセパレータ含む）
+- `**/` — 先頭の任意のパスプレフィックス（ゼロ個以上のセグメント）。`**/foo` は `foo` にも `a/b/foo` にもマッチする
 
-- `headerSize`
-- `format`
+各パターン値の項目:
+
+| 項目         | 必須 | 説明                                          |
+| ------------ | ---- | --------------------------------------------- |
+| `width`      | ○    | 画像の横幅（ピクセル）                        |
+| `height`     | ○    | 画像の縦幅（ピクセル）                        |
+| `headerSize` | —    | 先頭スキップバイト数（デフォルト: `0`）       |
+| `format`     | —    | ピクセルフォーマット（デフォルト: `"rgb24"`） |
+
+`width` と `height` はいずれかのパターンで解決されなければならない。解決できない場合はエラーを Webview に通知する。
+
+`rawviewer.createConfig` コマンドを使うと、テンプレート入りの `.rawimagerc` を生成してエディタで開ける。
 
 ### 5.2 ワークスペース設定
 
