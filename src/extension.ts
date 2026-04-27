@@ -1,434 +1,84 @@
-import * as vscode from 'vscode';
+/**
+ * extension.ts — VS Code 拡張機能のエントリーポイント
+ *
+ * このファイルは VS Code との接続部分だけを担います。
+ * ピクセルデコード → decoder.ts
+ * 設定ファイル読み込み → config.ts
+ * Webview HTML 生成 → webviewHtml.ts
+ * 型定義 → types.ts
+ *
+ * 処理の流れ（データフロー）:
+ *   1. VS Code がファイルを開く
+ *   2. RawImageEditorProvider が Webview パネルを作成する
+ *   3. .rawimagerc を探して設定を読み込む
+ *   4. `render` メッセージを Webview に送信する
+ *   5. Webview が canvas に画像を描画する
+ */
+
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vscode from 'vscode';
 
-const streamDecodableFormats = [
-  'gray8',
-  'gray16le',
-  'gray16be',
-  'rgb24',
-  'bgr24',
-  'rgba32',
-  'bgra32',
-] as const;
-export const supportedFormats = [
-  ...streamDecodableFormats,
-  'yuv420p',
-  'nv12',
-  'yuyv422',
-  'float32',
-  'depth16',
-] as const;
+// 他のモジュールから必要な型・関数をインポートする
+// （import = 他のファイルで定義された部品を「借りてくる」）
+import {
+  findConfigPath,
+  getConfigSearchDirectories,
+  loadRawImageConfig,
+  resolveFallbackRawImageConfig,
+  validateOptionalFormat,
+  validateOptionalNonNegativeInteger,
+  validateOptionalPositiveInteger,
+} from './config';
+import type {
+  InitialRenderHandshake,
+  RawImageFallbackSettings,
+  TimeoutCanceler,
+  TimeoutScheduler,
+} from './types';
+import { buildWebviewHtml } from './webviewHtml';
 
-type StreamDecodableRawImageFormat = (typeof streamDecodableFormats)[number];
-type RawImageFormat = (typeof supportedFormats)[number];
-type RawImageConfigSource = 'rawimagerc' | 'filename' | 'settings' | 'filename+settings';
+// =============================================================================
+// VS Code カスタムエディター: ドキュメント
+// =============================================================================
 
-interface RawImageConfig {
-  width: number;
-  height: number;
-  headerSize: number;
-  format: RawImageFormat;
-}
-
-interface RawImageConfigRecord {
-  patterns?: Record<
-    string,
-    {
-      width?: number;
-      height?: number;
-      headerSize?: number;
-      format?: RawImageFormat;
-    }
-  >;
-}
-
-function globToRegExp(glob: string): RegExp {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  const withStar = escaped.replace(/\*/g, '([^/\\\\]*)');
-  const withDoubleStar = withStar.replace(/\(\[\^\/\\\\\]\*\)\(\[\^\/\\\\\]\*\)/g, '.*');
-  return new RegExp(`^${withDoubleStar}$`);
-}
-
-interface RawImageFallbackSettings {
-  defaultWidth?: number;
-  defaultHeight?: number;
-  defaultHeaderSize?: number;
-  defaultFormat?: RawImageFormat;
-  inferFromFilename?: boolean;
-}
-
-interface ResolvedRawImageConfig {
-  config: RawImageConfig | null;
-  source?: RawImageConfigSource;
-}
-
-type TimeoutHandle = ReturnType<typeof setTimeout>;
-type TimeoutScheduler = (callback: () => void, delay: number) => TimeoutHandle;
-type TimeoutCanceler = (timeout: TimeoutHandle) => void;
-
-interface InitialRenderHandshake {
-  handleMessage(messageType: string): boolean;
-  dispose(): void;
-}
-
-interface RawImageDecodeState {
-  format: StreamDecodableRawImageFormat;
-  totalPixels: number;
-  pixelsWritten: number;
-  remainingHeaderBytes: number;
-  bytesPerPixel: number;
-  pendingBytes: Uint8Array;
-  pendingLength: number;
-}
-
-export function getBytesPerPixel(format: StreamDecodableRawImageFormat): number {
-  switch (format) {
-    case 'gray8':
-      return 1;
-    case 'gray16le':
-    case 'gray16be':
-      return 2;
-    case 'rgb24':
-    case 'bgr24':
-      return 3;
-    case 'rgba32':
-    case 'bgra32':
-      return 4;
-  }
-}
-
-export function createRawImageDecodeState(
-  width: number,
-  height: number,
-  headerSize: number,
-  format: StreamDecodableRawImageFormat
-): RawImageDecodeState {
-  const bytesPerPixel = getBytesPerPixel(format);
-  return {
-    format,
-    totalPixels: width * height,
-    pixelsWritten: 0,
-    remainingHeaderBytes: Math.max(0, headerSize),
-    bytesPerPixel,
-    pendingBytes: new Uint8Array(bytesPerPixel),
-    pendingLength: 0,
-  };
-}
-
-function decodeRawPixel(
-  source: Uint8Array,
-  offset: number,
-  format: StreamDecodableRawImageFormat
-): [number, number, number, number] {
-  switch (format) {
-    case 'gray8': {
-      const value = source[offset] ?? 0;
-      return [value, value, value, 255];
-    }
-    case 'gray16le': {
-      const lowByte = source[offset] ?? 0;
-      const highByte = source[offset + 1] ?? 0;
-      const value = ((highByte << 8) | lowByte) >> 8;
-      return [value, value, value, 255];
-    }
-    case 'gray16be': {
-      const highByte = source[offset] ?? 0;
-      const lowByte = source[offset + 1] ?? 0;
-      const value = ((highByte << 8) | lowByte) >> 8;
-      return [value, value, value, 255];
-    }
-    case 'rgb24':
-      return [source[offset] ?? 0, source[offset + 1] ?? 0, source[offset + 2] ?? 0, 255];
-    case 'bgr24':
-      return [source[offset + 2] ?? 0, source[offset + 1] ?? 0, source[offset] ?? 0, 255];
-    case 'rgba32':
-      return [
-        source[offset] ?? 0,
-        source[offset + 1] ?? 0,
-        source[offset + 2] ?? 0,
-        source[offset + 3] ?? 0,
-      ];
-    case 'bgra32':
-      return [
-        source[offset + 2] ?? 0,
-        source[offset + 1] ?? 0,
-        source[offset] ?? 0,
-        source[offset + 3] ?? 0,
-      ];
-  }
-}
-
-export function appendRawImageChunk(
-  state: RawImageDecodeState,
-  chunk: Uint8Array,
-  pixels: Uint8ClampedArray
-): void {
-  if (state.pixelsWritten >= state.totalPixels || chunk.length === 0) {
-    return;
-  }
-
-  let offset = 0;
-  if (state.remainingHeaderBytes > 0) {
-    const skipped = Math.min(state.remainingHeaderBytes, chunk.length);
-    state.remainingHeaderBytes -= skipped;
-    offset += skipped;
-  }
-
-  if (offset >= chunk.length) {
-    return;
-  }
-
-  while (
-    state.pendingLength > 0 &&
-    offset < chunk.length &&
-    state.pendingLength < state.bytesPerPixel
-  ) {
-    state.pendingBytes[state.pendingLength++] = chunk[offset++];
-  }
-
-  if (state.pendingLength === state.bytesPerPixel && state.pixelsWritten < state.totalPixels) {
-    const [r, g, b, a] = decodeRawPixel(state.pendingBytes, 0, state.format);
-    const destinationOffset = state.pixelsWritten * 4;
-    pixels[destinationOffset] = r;
-    pixels[destinationOffset + 1] = g;
-    pixels[destinationOffset + 2] = b;
-    pixels[destinationOffset + 3] = a;
-    state.pixelsWritten += 1;
-    state.pendingLength = 0;
-  }
-
-  while (offset + state.bytesPerPixel <= chunk.length && state.pixelsWritten < state.totalPixels) {
-    const [r, g, b, a] = decodeRawPixel(chunk, offset, state.format);
-    const destinationOffset = state.pixelsWritten * 4;
-    pixels[destinationOffset] = r;
-    pixels[destinationOffset + 1] = g;
-    pixels[destinationOffset + 2] = b;
-    pixels[destinationOffset + 3] = a;
-    state.pixelsWritten += 1;
-    offset += state.bytesPerPixel;
-  }
-
-  while (
-    offset < chunk.length &&
-    state.pendingLength < state.bytesPerPixel &&
-    state.pixelsWritten < state.totalPixels
-  ) {
-    state.pendingBytes[state.pendingLength++] = chunk[offset++];
-  }
-}
-
-const grayscaleStreamFormats = ['gray8', 'gray16le', 'gray16be', 'depth16'] as const;
-type GrayscaleStreamFormat = (typeof grayscaleStreamFormats)[number];
-
-interface GrayDecodeState {
-  format: GrayscaleStreamFormat;
-  totalPixels: number;
-  pixelsWritten: number;
-  remainingHeaderBytes: number;
-  bytesPerPixel: number;
-  pendingByte: number;
-  hasPendingByte: boolean;
-  rawGray: Uint16Array;
-  autoMin: number;
-  autoMax: number;
-  maxValue: number;
-}
-
-export function createGrayDecodeState(
-  width: number,
-  height: number,
-  headerSize: number,
-  format: GrayscaleStreamFormat
-): GrayDecodeState {
-  const totalPixels = width * height;
-  const bytesPerPixel = format === 'gray8' ? 1 : 2;
-  const maxValue = format === 'gray8' ? 255 : 65535;
-  return {
-    format,
-    totalPixels,
-    pixelsWritten: 0,
-    remainingHeaderBytes: Math.max(0, headerSize),
-    bytesPerPixel,
-    pendingByte: 0,
-    hasPendingByte: false,
-    rawGray: new Uint16Array(totalPixels),
-    autoMin: maxValue,
-    autoMax: 0,
-    maxValue,
-  };
-}
-
-export function appendGrayChunk(state: GrayDecodeState, chunk: Uint8Array): void {
-  if (state.pixelsWritten >= state.totalPixels || chunk.length === 0) {
-    return;
-  }
-
-  let offset = 0;
-  if (state.remainingHeaderBytes > 0) {
-    const skipped = Math.min(state.remainingHeaderBytes, chunk.length);
-    state.remainingHeaderBytes -= skipped;
-    offset += skipped;
-  }
-
-  if (offset >= chunk.length) {
-    return;
-  }
-
-  const writeGrayPixel = (value: number): void => {
-    state.rawGray[state.pixelsWritten] = value;
-    if (value < state.autoMin) {
-      state.autoMin = value;
-    }
-    if (value > state.autoMax) {
-      state.autoMax = value;
-    }
-    state.pixelsWritten += 1;
-  };
-
-  if (state.format === 'gray8') {
-    while (offset < chunk.length && state.pixelsWritten < state.totalPixels) {
-      writeGrayPixel(chunk[offset++]);
-    }
-  } else {
-    const isLittleEndian = state.format === 'gray16le' || state.format === 'depth16';
-    if (state.hasPendingByte && offset < chunk.length && state.pixelsWritten < state.totalPixels) {
-      const b0 = state.pendingByte;
-      const b1 = chunk[offset++];
-      writeGrayPixel(isLittleEndian ? (b1 << 8) | b0 : (b0 << 8) | b1);
-      state.hasPendingByte = false;
-    }
-    while (offset + 2 <= chunk.length && state.pixelsWritten < state.totalPixels) {
-      const b0 = chunk[offset++];
-      const b1 = chunk[offset++];
-      writeGrayPixel(isLittleEndian ? (b1 << 8) | b0 : (b0 << 8) | b1);
-    }
-    if (offset < chunk.length && state.pixelsWritten < state.totalPixels) {
-      state.pendingByte = chunk[offset];
-      state.hasPendingByte = true;
-    }
-  }
-}
-
-export function applyWindowLevel(
-  rawGray: Uint16Array | Float32Array,
-  totalPixels: number,
-  windowMin: number,
-  windowMax: number,
-  pixels: Uint8ClampedArray
-): void {
-  const range = windowMax - windowMin;
-  for (let p = 0; p < totalPixels; p++) {
-    let mapped: number;
-    if (range <= 0) {
-      mapped = 128;
-    } else {
-      mapped = Math.round(((rawGray[p] - windowMin) / range) * 255);
-      if (mapped < 0) {
-        mapped = 0;
-      }
-      if (mapped > 255) {
-        mapped = 255;
-      }
-    }
-    const idx = p * 4;
-    pixels[idx] = mapped;
-    pixels[idx + 1] = mapped;
-    pixels[idx + 2] = mapped;
-    pixels[idx + 3] = 255;
-  }
-}
-
-interface Float32DecodeState {
-  totalPixels: number;
-  pixelsWritten: number;
-  remainingHeaderBytes: number;
-  pendingBytes: Uint8Array;
-  pendingLength: number;
-  rawGrayF32: Float32Array;
-  autoMin: number;
-  autoMax: number;
-}
-
-export function createFloat32DecodeState(
-  width: number,
-  height: number,
-  headerSize: number
-): Float32DecodeState {
-  const totalPixels = width * height;
-  return {
-    totalPixels,
-    pixelsWritten: 0,
-    remainingHeaderBytes: Math.max(0, headerSize),
-    pendingBytes: new Uint8Array(4),
-    pendingLength: 0,
-    rawGrayF32: new Float32Array(totalPixels),
-    autoMin: Infinity,
-    autoMax: -Infinity,
-  };
-}
-
-export function appendFloat32Chunk(state: Float32DecodeState, chunk: Uint8Array): void {
-  if (state.pixelsWritten >= state.totalPixels || chunk.length === 0) {
-    return;
-  }
-
-  let offset = 0;
-  if (state.remainingHeaderBytes > 0) {
-    const skipped = Math.min(state.remainingHeaderBytes, chunk.length);
-    state.remainingHeaderBytes -= skipped;
-    offset += skipped;
-  }
-
-  if (offset >= chunk.length) {
-    return;
-  }
-
-  const writeFloat32Pixel = (value: number): void => {
-    if (isFinite(value)) {
-      if (value < state.autoMin) {
-        state.autoMin = value;
-      }
-      if (value > state.autoMax) {
-        state.autoMax = value;
-      }
-    }
-    state.rawGrayF32[state.pixelsWritten++] = value;
-  };
-
-  while (state.pendingLength > 0 && offset < chunk.length && state.pendingLength < 4) {
-    state.pendingBytes[state.pendingLength++] = chunk[offset++];
-  }
-
-  if (state.pendingLength === 4 && state.pixelsWritten < state.totalPixels) {
-    const pendingView = new DataView(state.pendingBytes.buffer);
-    writeFloat32Pixel(pendingView.getFloat32(0, true));
-    state.pendingLength = 0;
-  }
-
-  const view = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-  while (offset + 4 <= chunk.length && state.pixelsWritten < state.totalPixels) {
-    writeFloat32Pixel(view.getFloat32(offset, true));
-    offset += 4;
-  }
-
-  while (
-    offset < chunk.length &&
-    state.pendingLength < 4 &&
-    state.pixelsWritten < state.totalPixels
-  ) {
-    state.pendingBytes[state.pendingLength++] = chunk[offset++];
-  }
-}
-
+/**
+ * RawImageDocument — VS Code のドキュメントモデル。
+ *
+ * VS Code は「ドキュメント」（ファイルの中身）と「エディター」（表示画面）を
+ * 分けて管理します。CustomDocument はそのドキュメント側の実装です。
+ * このクラスはシンプルで、ファイルの URI（パス）を保持するだけです。
+ */
 class RawImageDocument implements vscode.CustomDocument {
+  /** @param uri — 開いたファイルのパス（例: /repo/images/frame.raw） */
   constructor(public readonly uri: vscode.Uri) {}
+
+  /** ドキュメントが閉じられたときに呼ばれる。解放するリソースはない。 */
   dispose(): void {}
 }
 
+// =============================================================================
+// VS Code カスタムエディター: プロバイダー
+// =============================================================================
+
+/**
+ * RawImageEditorProvider — カスタムエディターの本体。
+ *
+ * VS Code の `CustomReadonlyEditorProvider` インターフェースを実装します。
+ * 「読み取り専用」カスタムエディターとして、.raw ファイルを開いたときに
+ * Webview パネルを表示する責務を持ちます。
+ *
+ * 「インターフェース」とは「この機能を持ちなさい」という約束のようなもので、
+ * `implements` キーワードでその約束を実装することを宣言します。
+ */
 class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawImageDocument> {
+  /** VS Code の設定ファイル（package.json）で定義したエディタータイプの識別子 */
   static readonly viewType = 'rawviewer.rawImageEditor';
 
+  /**
+   * VS Code にカスタムエディターを登録して、返される Disposable を返します。
+   * Disposable とは「後で解放できるリソース」のことです。
+   */
   static register(context: vscode.ExtensionContext): vscode.Disposable {
     return vscode.window.registerCustomEditorProvider(
       RawImageEditorProvider.viewType,
@@ -440,18 +90,36 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
     );
   }
 
+  /** `private readonly` = このクラスの中だけで使い、後から書き換えない */
   constructor(private readonly _context: vscode.ExtensionContext) {}
 
+  /**
+   * VS Code がファイルを開くたびに呼ばれ、ドキュメントオブジェクトを作成します。
+   */
   openCustomDocument(uri: vscode.Uri): RawImageDocument {
     return new RawImageDocument(uri);
   }
 
+  /**
+   * ドキュメントに対応する Webview パネルを作成・設定します。
+   * `async` = この中で `await`（非同期処理の完了を待つ）を使えます。
+   *
+   * @param document    開いたファイルの情報
+   * @param webviewPanel VS Code が作成した Webview パネル
+   * @param _token      キャンセル用トークン（今回は使わない。_ 始まりは使わない引数の慣習）
+   */
   async resolveCustomEditor(
     document: RawImageDocument,
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken
   ): Promise<void> {
+    // 最初に .rawimagerc を探す（後でリフレッシュのたびに再探索する）
     let currentConfigPath = findConfigPath(document.uri.fsPath);
+
+    /**
+     * Webview のオプション（アクセスできるファイルの範囲など）を更新する。
+     * .rawimagerc が別ディレクトリにある場合はそのディレクトリも追加する。
+     */
     const updateWebviewOptions = (): void => {
       webviewPanel.webview.options = {
         enableScripts: true,
@@ -461,12 +129,22 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
 
     updateWebviewOptions();
 
+    // 最初の render メッセージをまだ送っていないかを管理するフラグ
     let initialPayloadSent = false;
+    // ファイル変更後のリフレッシュを少し待つためのタイマー
     let refreshTimer: NodeJS.Timeout | undefined;
+
+    /**
+     * 設定を解決して Webview に `render` または `error` メッセージを送る。
+     * ファイルを最初に開いたときと、.rawimagerc が変更されたときに呼ばれる。
+     */
     const postRenderPayload = (): void => {
+      // 最新の設定ファイルパスを再探索する
       currentConfigPath = findConfigPath(document.uri.fsPath);
       updateWebviewOptions();
+
       try {
+        // 設定を解決: .rawimagerc があればそれを使い、なければファイル名推測とワークスペース設定にフォールバック
         const resolvedConfig = currentConfigPath
           ? {
               config: loadRawImageConfig(currentConfigPath, document.uri.fsPath),
@@ -478,8 +156,11 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
                 vscode.workspace.getConfiguration('rawviewer', document.uri)
               )
             );
+
         const fileStat = fs.statSync(document.uri.fsPath);
         const fileUri = webviewPanel.webview.asWebviewUri(document.uri).toString();
+
+        // Webview に描画指示を送る（Webview は fetch でファイルを読み込み canvas に描画する）
         webviewPanel.webview.postMessage({
           type: 'render',
           config: resolvedConfig.config,
@@ -488,12 +169,15 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
           fileSize: fileStat.size,
         });
       } catch (err: unknown) {
+        // エラーが起きたら Webview にエラーメッセージを送る
         webviewPanel.webview.postMessage({
           type: 'error',
           message: err instanceof Error ? err.message : String(err),
         });
       }
     };
+
+    /** 初回の render メッセージを1度だけ送る。2回目以降は無視する。 */
     const sendInitialRenderPayload = (): void => {
       if (initialPayloadSent) {
         return;
@@ -501,6 +185,11 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
       initialPayloadSent = true;
       postRenderPayload();
     };
+
+    /**
+     * ファイルや設定の変更後、少し間を置いてから再描画する（デバウンス処理）。
+     * 短時間に何度も変更が来ても最後の1回だけ処理する。
+     */
     const scheduleRefresh = (): void => {
       if (!initialPayloadSent) {
         return;
@@ -514,17 +203,22 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
       }, 100);
     };
 
+    // Webview からの 'ready' メッセージを待つハンドシェイクを開始する
+    // 300ms 以内に ready が届かなくても強制送信する（フォールバック）
     const initialRenderHandshake = createInitialRenderHandshake(sendInitialRenderPayload, () => {
       void vscode.window.showWarningMessage(
         'Raw Image Viewer: webview did not send a ready message. Open "Developer: Open Webview Developer Tools" and check console errors.'
       );
     });
 
+    // Webview からのメッセージを受け取るリスナーを登録する
     const listener = webviewPanel.webview.onDidReceiveMessage(async (message) => {
+      // 'ready' メッセージはハンドシェイクが処理する
       if (initialRenderHandshake.handleMessage(message.type)) {
         return;
       }
 
+      // 'savePng' = Webview の「Export PNG」ボタンが押された
       if (message.type === 'savePng') {
         try {
           const targetUri = await vscode.window.showSaveDialog({
@@ -547,7 +241,13 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
       }
     });
 
+    // パネルが閉じられたときに解放するリソースのリスト
     const panelDisposables: vscode.Disposable[] = [listener];
+
+    /**
+     * FileSystemWatcher を作成して、ファイルの変更を監視する。
+     * Disposable に追加しておくことで、パネルが閉じられたときに自動解除できる。
+     */
     const registerRefreshListeners = (watcher: vscode.FileSystemWatcher): void => {
       panelDisposables.push(watcher);
       panelDisposables.push(watcher.onDidChange(scheduleRefresh));
@@ -555,6 +255,7 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
       panelDisposables.push(watcher.onDidDelete(scheduleRefresh));
     };
 
+    // 画像ファイル自体の変更を監視する
     registerRefreshListeners(
       vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(
@@ -564,15 +265,17 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
       )
     );
 
+    // ファイルから上に向かって各ディレクトリの .rawimagerc を監視する
     for (const dir of getConfigSearchDirectories(document.uri.fsPath)) {
       registerRefreshListeners(
         vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(dir, '.rawimagerc'))
       );
     }
 
-    const nonce = getNonce();
-    webviewPanel.webview.html = getWebviewHtml(nonce, webviewPanel.webview.cspSource);
+    // Webview の HTML をセットする（webviewHtml.ts が生成する）
+    webviewPanel.webview.html = buildWebviewHtml(webviewPanel.webview.cspSource);
 
+    // パネルが閉じられたときのクリーンアップ処理
     webviewPanel.onDidDispose(() => {
       initialRenderHandshake.dispose();
       if (refreshTimer) {
@@ -583,30 +286,35 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
   }
 }
 
-export function getConfigSearchDirectories(filePath: string): string[] {
-  const directories: string[] = [];
-  let dir = path.dirname(filePath);
-  while (true) {
-    directories.push(dir);
-    const parent = path.dirname(dir);
-    if (parent === dir) {
-      break;
-    }
-    dir = parent;
-  }
-  return directories;
-}
+// =============================================================================
+// ハンドシェイク: 起動タイミング制御
+// =============================================================================
 
+/**
+ * Webview の起動ハンドシェイクを管理します。
+ *
+ * Webview は起動直後に 'ready' メッセージを送ってきます。
+ * Extension は 'ready' を受け取ったら即座に 'render' を送り返します。
+ * ただし、起動タイミングのずれで 'ready' が届かない場合に備えて
+ * 300ms 後に強制送信するタイマーも持ちます。
+ *
+ * @param sendInitialRenderPayload 初回レンダリングを送る関数
+ * @param showReadyWarning         5秒経っても ready が届かない場合の警告関数
+ * @param scheduleTimeout          テスト時に差し替えられる setTimeout（省略可）
+ * @param cancelTimeout            テスト時に差し替えられる clearTimeout（省略可）
+ */
 export function createInitialRenderHandshake(
   sendInitialRenderPayload: () => void,
   showReadyWarning: () => void,
   scheduleTimeout: TimeoutScheduler = setTimeout,
   cancelTimeout: TimeoutCanceler = clearTimeout
 ): InitialRenderHandshake {
+  // 300ms 後に強制的に render を送るフォールバックタイマー
   const initialSendTimer = scheduleTimeout(() => {
     sendInitialRenderPayload();
   }, 300);
 
+  // 5秒経っても ready が届かなかった場合に警告を出すタイマー
   const readyWarningTimer = scheduleTimeout(() => {
     showReadyWarning();
   }, 5000);
@@ -614,204 +322,109 @@ export function createInitialRenderHandshake(
   return {
     handleMessage(messageType: string): boolean {
       if (messageType !== 'ready') {
-        return false;
+        return false; // 'ready' 以外のメッセージは処理しない
       }
 
+      // 'ready' を受け取ったので両方のタイマーをキャンセルして即座に render を送る
       cancelTimeout(initialSendTimer);
       cancelTimeout(readyWarningTimer);
       sendInitialRenderPayload();
       return true;
     },
     dispose(): void {
+      // パネルが閉じられたときに未発火のタイマーをキャンセルする
       cancelTimeout(initialSendTimer);
       cancelTimeout(readyWarningTimer);
     },
   };
 }
 
-export function findConfigPath(filePath: string): string | undefined {
-  for (const dir of getConfigSearchDirectories(filePath)) {
-    const configPath = path.join(dir, '.rawimagerc');
-    try {
-      fs.accessSync(configPath, fs.constants.F_OK);
-      return configPath;
-    } catch (err: unknown) {
-      const nodeErr = err as NodeJS.ErrnoException;
-      if (nodeErr.code !== 'ENOENT') {
-        throw err;
-      }
-    }
-  }
-  return undefined;
-}
+// =============================================================================
+// Webview のリソースアクセス権設定
+// =============================================================================
 
-function isRawImageConfigRecord(value: unknown): value is RawImageConfigRecord {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function validateInteger(
-  value: unknown,
-  property: string,
-  source: string,
-  min: number,
-  optional: boolean = false,
-  isConfigPath: boolean = false
-): number | undefined {
-  if (optional && value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < min) {
-    const label = min === 1 ? 'positive' : 'non-negative';
-    const prefix = isConfigPath ? `Invalid .rawimagerc at "${source}"` : `Invalid ${source}`;
-    throw new Error(`${prefix}: "${property}" must be a ${label} integer.`);
-  }
-  return value as number;
-}
-
-function validatePositiveInteger(
-  value: unknown,
-  property: 'width' | 'height',
-  configPath: string
-): number {
-  return validateInteger(value, property, configPath, 1, false, true) as number;
-}
-
-function validateNonNegativeInteger(
-  value: unknown,
-  property: 'headerSize',
-  configPath: string
-): number {
-  return validateInteger(value, property, configPath, 0, false, true) as number;
-}
-
-function validateOptionalPositiveInteger(
-  value: unknown,
-  property: 'defaultWidth' | 'defaultHeight',
-  source: string
-): number | undefined {
-  return validateInteger(value, property, source, 1, true, false);
-}
-
-function validateOptionalNonNegativeInteger(
-  value: unknown,
-  property: 'defaultHeaderSize',
-  source: string
-): number | undefined {
-  return validateInteger(value, property, source, 0, true, false);
-}
-
-function validateOptionalFormat(
-  value: unknown,
-  property: 'defaultFormat',
-  source: string
-): RawImageFormat | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value !== 'string' || !supportedFormats.includes(value as RawImageFormat)) {
-    throw new Error(
-      `Invalid ${source}: "${property}" must be one of ${supportedFormats.join(', ')}.`
-    );
-  }
-  return value as RawImageFormat;
-}
-
-export function parseRawImageConfig(
-  content: string,
-  configPath: string,
-  targetFilePath: string
-): RawImageConfig {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Failed to parse .rawimagerc at "${configPath}": ${message}`);
-  }
-
-  if (!isRawImageConfigRecord(parsed)) {
-    throw new Error(`Invalid .rawimagerc at "${configPath}": expected a JSON object.`);
-  }
-
-  // Calculate relative path from config directory to target file
-  const configDir = path.dirname(configPath);
-  let relativePath = path.relative(configDir, targetFilePath);
-  // Normalize to use forward slashes for glob matching
-  relativePath = relativePath.split(path.sep).join('/');
-
-  // Resolve configuration by merging all matching patterns
-  const resolved: {
-    width?: number;
-    height?: number;
-    headerSize?: number;
-    format?: RawImageFormat;
-  } = {};
-
-  if (parsed.patterns) {
-    for (const [pattern, override] of Object.entries(parsed.patterns)) {
-      if (globToRegExp(pattern).test(relativePath)) {
-        Object.assign(resolved, override);
-      }
-    }
-  }
-
-  const width = validatePositiveInteger(resolved.width, 'width', configPath);
-  const height = validatePositiveInteger(resolved.height, 'height', configPath);
-  const headerSize = validateNonNegativeInteger(resolved.headerSize ?? 0, 'headerSize', configPath);
-  const format = resolved.format ?? 'rgb24';
-
-  if (typeof format !== 'string' || !supportedFormats.includes(format as RawImageFormat)) {
-    throw new Error(
-      `Invalid .rawimagerc at "${configPath}": "format" must be one of ${supportedFormats.join(', ')}.`
-    );
-  }
-
-  return {
-    width,
-    height,
-    headerSize,
-    format: format as RawImageFormat,
+/**
+ * Webview が fetch でアクセスできるディレクトリのリストを返します。
+ *
+ * VS Code のセキュリティ制限により、Webview は `localResourceRoots` に
+ * 含まれるディレクトリのファイルしか読み込めません。
+ * .rawimagerc が別ディレクトリにあるときは最大2ディレクトリになります。
+ *
+ * `Map` を使っているのは、同じディレクトリが重複して入らないようにするため。
+ * Windows では大文字小文字を区別しないパス比較のためにキーを小文字化します。
+ *
+ * @param documentUri  開いたファイルの URI
+ * @param configPath   .rawimagerc のパス（なければ undefined）
+ */
+export function getLocalResourceRoots(documentUri: vscode.Uri, configPath?: string): vscode.Uri[] {
+  const roots = new Map<string, vscode.Uri>();
+  const addRoot = (fsPath: string): void => {
+    const uri = vscode.Uri.file(fsPath);
+    const key = process.platform === 'win32' ? uri.fsPath.toLowerCase() : uri.fsPath;
+    roots.set(key, uri);
   };
-}
 
-function loadRawImageConfig(configPath: string, targetFilePath: string): RawImageConfig {
-  return parseRawImageConfig(fs.readFileSync(configPath, 'utf8'), configPath, targetFilePath);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-export function inferRawImageConfigFromFilename(filePath: string): Partial<RawImageConfig> | null {
-  const baseName = path.parse(filePath).name.toLowerCase();
-  const sizeMatch = baseName.match(/(?:^|[^0-9])(\d+)x(\d+)(?:[^0-9]|$)/);
-  const width = sizeMatch ? Number.parseInt(sizeMatch[1], 10) : undefined;
-  const height = sizeMatch ? Number.parseInt(sizeMatch[2], 10) : undefined;
-  const format = supportedFormats.find((candidate) =>
-    new RegExp(`(?:^|[^a-z0-9])${escapeRegExp(candidate)}(?:[^a-z0-9]|$)`).test(baseName)
-  );
-
-  if (width === undefined && height === undefined && format === undefined) {
-    return null;
+  addRoot(path.dirname(documentUri.fsPath));
+  if (configPath) {
+    addRoot(path.dirname(configPath));
   }
 
-  const inferred: Partial<RawImageConfig> = {};
-  if (width !== undefined && Number.isInteger(width) && width > 0) {
-    inferred.width = width;
-  }
-  if (height !== undefined && Number.isInteger(height) && height > 0) {
-    inferred.height = height;
-  }
-  if (format) {
-    inferred.format = format;
-  }
-
-  return Object.keys(inferred).length > 0 ? inferred : null;
+  return [...roots.values()];
 }
 
+// =============================================================================
+// PNG エクスポート
+// =============================================================================
+
+/**
+ * 保存ダイアログのデフォルトファイル名を作ります。
+ * 例: `/repo/images/frame.raw` → `/repo/images/frame.png`
+ *
+ * @param documentUri 元のファイルの URI
+ */
+export function getSuggestedPngSaveUri(documentUri: vscode.Uri): vscode.Uri {
+  const parsed = path.parse(documentUri.fsPath);
+  return vscode.Uri.file(path.join(parsed.dir, `${parsed.name}.png`));
+}
+
+/**
+ * Webview の canvas.toDataURL() が返す Data URL を Uint8Array に変換します。
+ * Data URL の形式: `data:image/png;base64,<base64文字列>`
+ *
+ * @param dataUrl Webview から送られてきた Data URL 文字列
+ * @throws Data URL でない場合や PNG データでない場合
+ */
+export function decodePngDataUrl(dataUrl: unknown): Uint8Array {
+  if (typeof dataUrl !== 'string') {
+    throw new Error('Missing PNG data.');
+  }
+
+  const match = dataUrl.match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) {
+    throw new Error('Invalid PNG data received from the webview.');
+  }
+
+  // Base64 文字列を Buffer にデコードして Uint8Array に変換する
+  return Uint8Array.from(Buffer.from(match[1], 'base64'));
+}
+
+// =============================================================================
+// ワークスペース設定の読み込み
+// =============================================================================
+
+/**
+ * VS Code のワークスペース設定から rawviewer の設定を読み込みます。
+ *
+ * `inspect()` を使うことで、グローバル設定よりワークスペース設定を優先するなど
+ * 設定のスコープを正しく考慮できます。
+ * （単純な `.get()` はスコープの優先順位を考慮しません）
+ *
+ * @param configuration VS Code のワークスペース設定オブジェクト
+ */
 function getRawImageFallbackSettings(
   configuration: vscode.WorkspaceConfiguration
 ): RawImageFallbackSettings {
+  // スコープを考慮した設定値の取得ヘルパー
   const getConfiguredValue = <T>(key: string): T | undefined => {
     const inspected = configuration.inspect<T>(key);
     return (
@@ -829,6 +442,7 @@ function getRawImageFallbackSettings(
   const defaultHeaderSize = getConfiguredValue<number>('defaultHeaderSize');
   const defaultFormat = getConfiguredValue<string>('defaultFormat');
 
+  // 各設定値をバリデーションしてから返す（不正な設定値はここでエラーになる）
   return {
     defaultWidth: validateOptionalPositiveInteger(
       defaultWidth,
@@ -850,1125 +464,25 @@ function getRawImageFallbackSettings(
   };
 }
 
-export function resolveFallbackRawImageConfig(
-  filePath: string,
-  settings: RawImageFallbackSettings = {}
-): ResolvedRawImageConfig {
-  const validatedSettings: RawImageFallbackSettings = {
-    defaultWidth: validateOptionalPositiveInteger(
-      settings.defaultWidth,
-      'defaultWidth',
-      'rawviewer fallback settings'
-    ),
-    defaultHeight: validateOptionalPositiveInteger(
-      settings.defaultHeight,
-      'defaultHeight',
-      'rawviewer fallback settings'
-    ),
-    defaultHeaderSize: validateOptionalNonNegativeInteger(
-      settings.defaultHeaderSize,
-      'defaultHeaderSize',
-      'rawviewer fallback settings'
-    ),
-    defaultFormat: validateOptionalFormat(
-      settings.defaultFormat,
-      'defaultFormat',
-      'rawviewer fallback settings'
-    ),
-    inferFromFilename: settings.inferFromFilename ?? true,
-  };
-
-  const inferred = validatedSettings.inferFromFilename
-    ? inferRawImageConfigFromFilename(filePath)
-    : null;
-  const width = inferred?.width ?? validatedSettings.defaultWidth;
-  const height = inferred?.height ?? validatedSettings.defaultHeight;
-
-  if (width === undefined || height === undefined) {
-    return { config: null };
-  }
-
-  const usedInference =
-    inferred !== null &&
-    (inferred.width !== undefined ||
-      inferred.height !== undefined ||
-      inferred.format !== undefined);
-  const usedSettings =
-    validatedSettings.defaultWidth !== undefined ||
-    validatedSettings.defaultHeight !== undefined ||
-    validatedSettings.defaultHeaderSize !== undefined ||
-    validatedSettings.defaultFormat !== undefined;
-
-  let source: RawImageConfigSource = 'settings';
-  if (usedInference && usedSettings) {
-    source = 'filename+settings';
-  } else if (usedInference) {
-    source = 'filename';
-  }
-
-  return {
-    config: {
-      width,
-      height,
-      headerSize: inferred?.headerSize ?? validatedSettings.defaultHeaderSize ?? 0,
-      format: inferred?.format ?? validatedSettings.defaultFormat ?? 'rgb24',
-    },
-    source,
-  };
-}
-
-export function getLocalResourceRoots(documentUri: vscode.Uri, configPath?: string): vscode.Uri[] {
-  const roots = new Map<string, vscode.Uri>();
-  const addRoot = (fsPath: string): void => {
-    const uri = vscode.Uri.file(fsPath);
-    const key = process.platform === 'win32' ? uri.fsPath.toLowerCase() : uri.fsPath;
-    roots.set(key, uri);
-  };
-
-  addRoot(path.dirname(documentUri.fsPath));
-  if (configPath) {
-    addRoot(path.dirname(configPath));
-  }
-
-  return [...roots.values()];
-}
-
-export function getSuggestedPngSaveUri(documentUri: vscode.Uri): vscode.Uri {
-  const parsed = path.parse(documentUri.fsPath);
-  return vscode.Uri.file(path.join(parsed.dir, `${parsed.name}.png`));
-}
-
-export function decodePngDataUrl(dataUrl: unknown): Uint8Array {
-  if (typeof dataUrl !== 'string') {
-    throw new Error('Missing PNG data.');
-  }
-
-  const match = dataUrl.match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
-  if (!match) {
-    throw new Error('Invalid PNG data received from the webview.');
-  }
-
-  return Uint8Array.from(Buffer.from(match[1], 'base64'));
-}
-
-export function decodeRawImageToRgba(
-  pixelData: Uint8Array,
-  width: number,
-  height: number,
-  format: RawImageFormat
-): Uint8ClampedArray {
-  const totalPixels = width * height;
-  const pixels = new Uint8ClampedArray(totalPixels * 4);
-
-  const clampToByte = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
-  const writePixel = (pixelIndex: number, r: number, g: number, b: number, a = 255): void => {
-    const offset = pixelIndex * 4;
-    pixels[offset] = clampToByte(r);
-    pixels[offset + 1] = clampToByte(g);
-    pixels[offset + 2] = clampToByte(b);
-    pixels[offset + 3] = clampToByte(a);
-  };
-  const writeYuvPixel = (pixelIndex: number, y: number, u: number, v: number): void => {
-    const c = Math.max(0, y - 16);
-    const d = u - 128;
-    const e = v - 128;
-    writePixel(
-      pixelIndex,
-      (298 * c + 409 * e + 128) >> 8,
-      (298 * c - 100 * d - 208 * e + 128) >> 8,
-      (298 * c + 516 * d + 128) >> 8
-    );
-  };
-  const requireBytes = (requiredLength: number): void => {
-    if (pixelData.length < requiredLength) {
-      throw new Error(
-        `Expected at least ${requiredLength} bytes for ${width}x${height} ${format}, but found ${pixelData.length}.`
-      );
-    }
-  };
-
-  switch (format) {
-    case 'gray8':
-      for (let p = 0; p < totalPixels && p < pixelData.length; p++) {
-        const value = pixelData[p];
-        writePixel(p, value, value, value);
-      }
-      return pixels;
-    case 'gray16le':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 1 < pixelData.length;
-        p++, srcIdx += 2
-      ) {
-        const value = ((pixelData[srcIdx + 1] << 8) | pixelData[srcIdx]) >> 8;
-        writePixel(p, value, value, value);
-      }
-      return pixels;
-    case 'gray16be':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 1 < pixelData.length;
-        p++, srcIdx += 2
-      ) {
-        const value = ((pixelData[srcIdx] << 8) | pixelData[srcIdx + 1]) >> 8;
-        writePixel(p, value, value, value);
-      }
-      return pixels;
-    case 'rgb24':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 2 < pixelData.length;
-        p++, srcIdx += 3
-      ) {
-        writePixel(p, pixelData[srcIdx], pixelData[srcIdx + 1], pixelData[srcIdx + 2]);
-      }
-      return pixels;
-    case 'bgr24':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 2 < pixelData.length;
-        p++, srcIdx += 3
-      ) {
-        writePixel(p, pixelData[srcIdx + 2], pixelData[srcIdx + 1], pixelData[srcIdx]);
-      }
-      return pixels;
-    case 'rgba32':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 3 < pixelData.length;
-        p++, srcIdx += 4
-      ) {
-        writePixel(
-          p,
-          pixelData[srcIdx],
-          pixelData[srcIdx + 1],
-          pixelData[srcIdx + 2],
-          pixelData[srcIdx + 3]
-        );
-      }
-      return pixels;
-    case 'bgra32':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 3 < pixelData.length;
-        p++, srcIdx += 4
-      ) {
-        writePixel(
-          p,
-          pixelData[srcIdx + 2],
-          pixelData[srcIdx + 1],
-          pixelData[srcIdx],
-          pixelData[srcIdx + 3]
-        );
-      }
-      return pixels;
-    case 'yuv420p': {
-      if (width % 2 !== 0 || height % 2 !== 0) {
-        throw new Error(`Format ${format} requires even width and height.`);
-      }
-      const lumaPlaneSize = totalPixels;
-      const chromaPlaneSize = totalPixels / 4;
-      requireBytes(lumaPlaneSize + chromaPlaneSize * 2);
-      const uOffset = lumaPlaneSize;
-      const vOffset = uOffset + chromaPlaneSize;
-      const chromaWidth = width / 2;
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const pixelIndex = y * width + x;
-          const chromaIndex = Math.floor(y / 2) * chromaWidth + Math.floor(x / 2);
-          writeYuvPixel(
-            pixelIndex,
-            pixelData[pixelIndex],
-            pixelData[uOffset + chromaIndex],
-            pixelData[vOffset + chromaIndex]
-          );
-        }
-      }
-      return pixels;
-    }
-    case 'nv12': {
-      if (width % 2 !== 0 || height % 2 !== 0) {
-        throw new Error(`Format ${format} requires even width and height.`);
-      }
-      const lumaPlaneSize = totalPixels;
-      requireBytes(lumaPlaneSize + totalPixels / 2);
-      const uvOffset = lumaPlaneSize;
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const pixelIndex = y * width + x;
-          const chromaIndex = uvOffset + Math.floor(y / 2) * width + Math.floor(x / 2) * 2;
-          writeYuvPixel(
-            pixelIndex,
-            pixelData[pixelIndex],
-            pixelData[chromaIndex],
-            pixelData[chromaIndex + 1]
-          );
-        }
-      }
-      return pixels;
-    }
-    case 'yuyv422':
-      if (width % 2 !== 0) {
-        throw new Error(`Format ${format} requires an even width.`);
-      }
-      for (
-        let p = 0, srcIdx = 0;
-        p + 1 < totalPixels && srcIdx + 3 < pixelData.length;
-        p += 2, srcIdx += 4
-      ) {
-        const y0 = pixelData[srcIdx];
-        const u = pixelData[srcIdx + 1];
-        const y1 = pixelData[srcIdx + 2];
-        const v = pixelData[srcIdx + 3];
-        writeYuvPixel(p, y0, u, v);
-        writeYuvPixel(p + 1, y1, u, v);
-      }
-      return pixels;
-    case 'depth16':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 1 < pixelData.length;
-        p++, srcIdx += 2
-      ) {
-        const value = ((pixelData[srcIdx + 1] << 8) | pixelData[srcIdx]) >> 8;
-        writePixel(p, value, value, value);
-      }
-      return pixels;
-    case 'float32': {
-      const f32View = new DataView(pixelData.buffer, pixelData.byteOffset, pixelData.byteLength);
-      const floatPixels = new Float32Array(totalPixels);
-      let fMin = Infinity;
-      let fMax = -Infinity;
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 3 < pixelData.length;
-        p++, srcIdx += 4
-      ) {
-        const value = f32View.getFloat32(srcIdx, true);
-        floatPixels[p] = value;
-        if (isFinite(value)) {
-          if (value < fMin) {
-            fMin = value;
-          }
-          if (value > fMax) {
-            fMax = value;
-          }
-        }
-      }
-      if (!isFinite(fMin) || !isFinite(fMax) || fMin >= fMax) {
-        fMin = 0;
-        fMax = 1;
-      }
-      const fRange = fMax - fMin;
-      for (let p = 0; p < totalPixels; p++) {
-        const val = floatPixels[p];
-        let mapped: number;
-        if (!isFinite(val)) {
-          mapped = 0;
-        } else {
-          mapped = Math.round(((val - fMin) / fRange) * 255);
-          if (mapped < 0) {
-            mapped = 0;
-          }
-          if (mapped > 255) {
-            mapped = 255;
-          }
-        }
-        writePixel(p, mapped, mapped, mapped);
-      }
-      return pixels;
-    }
-  }
-}
-
-function getNonce(): string {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
-}
-
-function getWebviewHtml(nonce: string, cspSource: string): string {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; connect-src ${cspSource};">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Raw Image Viewer</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            background: #1e1e1e;
-            color: #cccccc;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            padding: 16px;
-            min-height: 100vh;
-        }
-        .center {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            min-height: 80vh;
-            gap: 12px;
-        }
-        .viewer {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 12px;
-        }
-        .viewer-header {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            align-items: center;
-            justify-content: center;
-        }
-        .info-bar {
-            color: #9cdcfe;
-            font-size: 13px;
-            font-family: 'Consolas', 'Courier New', monospace;
-        }
-        .pixel-info-bar {
-            color: #9cdcfe;
-            font-size: 13px;
-            font-family: 'Consolas', 'Courier New', monospace;
-            min-height: 1.2em;
-        }
-        .action-button {
-            appearance: none;
-            border: 1px solid #1177bb;
-            border-radius: 4px;
-            background: #0e639c;
-            color: #ffffff;
-            cursor: pointer;
-            font-size: 13px;
-            line-height: 1.2;
-            padding: 6px 12px;
-        }
-        .action-button:hover {
-            background: #1177bb;
-        }
-        .action-button.active {
-            background: #1177bb;
-            border-color: #9cdcfe;
-        }
-        .error-box {
-            background: #5a1d1d;
-            border: 1px solid #f48771;
-            border-radius: 4px;
-            padding: 16px 24px;
-            max-width: 600px;
-        }
-        .no-config-box {
-            background: #2d2d30;
-            border: 1px solid #555;
-            border-radius: 6px;
-            padding: 20px 28px;
-            max-width: 600px;
-        }
-        .no-config-box h3 { margin-bottom: 12px; color: #e2c08d; }
-        .no-config-box p { margin-bottom: 10px; line-height: 1.5; }
-        code {
-            background: #1e1e1e;
-            padding: 1px 5px;
-            border-radius: 3px;
-            font-family: 'Consolas', monospace;
-            font-size: 0.9em;
-        }
-        pre {
-            background: #1e1e1e;
-            padding: 12px 16px;
-            border-radius: 4px;
-            overflow-x: auto;
-            font-size: 13px;
-            line-height: 1.5;
-            margin-bottom: 10px;
-        }
-        table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
-        th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #444; }
-        th { color: #9cdcfe; }
-        canvas {
-            image-rendering: pixelated;
-            border: 1px solid #444;
-            box-shadow: 0 0 20px rgba(0,0,0,0.5);
-            display: block;
-        }
-        .canvas-viewport {
-            overflow: hidden;
-            cursor: grab;
-            position: relative;
-            align-self: stretch;
-            height: calc(100vh - 120px);
-            min-height: 200px;
-            background: #111;
-            border: 1px solid #333;
-            border-radius: 4px;
-        }
-        .canvas-viewport.panning {
-            cursor: grabbing;
-        }
-        .zoom-indicator {
-            position: absolute;
-            bottom: 8px;
-            right: 8px;
-            background: rgba(0, 0, 0, 0.6);
-            color: #9cdcfe;
-            font-size: 11px;
-            font-family: 'Consolas', 'Courier New', monospace;
-            padding: 2px 6px;
-            border-radius: 3px;
-            pointer-events: none;
-            user-select: none;
-        }
-        .zoom-hint {
-            position: absolute;
-            bottom: 8px;
-            left: 8px;
-            background: rgba(0, 0, 0, 0.5);
-            color: #888;
-            font-size: 10px;
-            font-family: 'Consolas', 'Courier New', monospace;
-            padding: 2px 6px;
-            border-radius: 3px;
-            pointer-events: none;
-            user-select: none;
-        }
-        .window-controls {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            color: #9cdcfe;
-            font-family: 'Consolas', 'Courier New', monospace;
-            width: 100%;
-            max-width: 640px;
-        }
-        .window-controls label {
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            white-space: nowrap;
-        }
-        .window-controls input[type=range] {
-            width: 140px;
-            accent-color: #0e639c;
-            cursor: pointer;
-        }
-        .window-reset {
-            appearance: none;
-            background: none;
-            border: 1px solid #555;
-            border-radius: 4px;
-            color: #9cdcfe;
-            cursor: pointer;
-            font-size: 11px;
-            padding: 3px 8px;
-        }
-        .window-reset:hover { border-color: #9cdcfe; }
-        .spinner {
-            width: 40px; height: 40px;
-            border: 3px solid #333;
-            border-top-color: #9cdcfe;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
-    </style>
-</head>
-<body>
-    <div id="root" class="center">
-        <div class="spinner"></div>
-        <p>Loading...</p>
-    </div>
-    <script nonce="${nonce}">
-        const vscode = acquireVsCodeApi();
-        const decodeRawImageToRgba = ${decodeRawImageToRgba.toString()};
-        const streamDecodableFormats = new Set(${JSON.stringify(streamDecodableFormats)});
-        const grayscaleStreamFormats = new Set(${JSON.stringify(grayscaleStreamFormats)});
-        var readyTimer = null;
-        var startupTimeout = null;
-        var activeAbortController = null;
-        var activeRenderId = 0;
-
-        ${getBytesPerPixel.toString()}
-        ${createRawImageDecodeState.toString()}
-        ${decodeRawPixel.toString()}
-        ${appendRawImageChunk.toString()}
-        ${createGrayDecodeState.toString()}
-        ${appendGrayChunk.toString()}
-        ${applyWindowLevel.toString()}
-        ${createFloat32DecodeState.toString()}
-        ${appendFloat32Chunk.toString()}
-
-        function clearReadyTimer() {
-            if (readyTimer) {
-                clearInterval(readyTimer);
-                readyTimer = null;
-            }
-            if (startupTimeout) {
-                clearTimeout(startupTimeout);
-                startupTimeout = null;
-            }
-        }
-
-        function showRuntimeError(err) {
-            var root = document.getElementById('root');
-            if (!root) {
-                return;
-            }
-            root.className = 'center';
-            root.innerHTML = '<div class="error-box"><strong>Webview Error:</strong> ' + escapeHtml(String(err)) + '</div>';
-        }
-
-        function escapeHtml(str) {
-            return String(str)
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;');
-        }
-
-        window.addEventListener('message', function(event) {
-            var msg = event.data;
-            var root = document.getElementById('root');
-
-            if (msg.type === 'error') {
-                clearReadyTimer();
-                root.className = 'center';
-                root.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + escapeHtml(msg.message) + '</div>';
-                return;
-            }
-
-            if (msg.type === 'render') {
-                clearReadyTimer();
-                var config = msg.config;
-                var configSource = msg.configSource;
-                var fileUri = msg.fileUri;
-                var fileSize = msg.fileSize;
-
-                if (!config) {
-                    root.className = 'center';
-                    root.innerHTML =
-                        '<div class="no-config-box">' +
-                        '<h3>\u2699 No .rawimagerc configuration found</h3>' +
-                        '<p>Create a <code>.rawimagerc</code> file in the same directory as the file, or any parent directory, to configure how to render this binary file as an image.</p>' +
-                        '<p>Alternatively, set workspace defaults such as <code>rawviewer.defaultWidth</code> and <code>rawviewer.defaultHeight</code>, or include metadata in the filename like <code>frame_1920x1080_rgb24.raw</code>.</p>' +
-                        '<pre>{\\n  "width": 640,\\n  "height": 480,\\n  "headerSize": 0,\\n  "format": "rgb24"\\n}</pre>' +
-                        '<p>Supported formats:</p>' +
-                        '<table>' +
-                        '<tr><th>Format</th><th>Description</th><th>Bytes/pixel</th></tr>' +
-                        '<tr><td><code>gray8</code></td><td>8-bit grayscale</td><td>1</td></tr>' +
-                        '<tr><td><code>gray16le</code></td><td>16-bit grayscale (little-endian)</td><td>2</td></tr>' +
-                        '<tr><td><code>gray16be</code></td><td>16-bit grayscale (big-endian)</td><td>2</td></tr>' +
-                        '<tr><td><code>rgb24</code></td><td>24-bit RGB</td><td>3</td></tr>' +
-                        '<tr><td><code>bgr24</code></td><td>24-bit BGR</td><td>3</td></tr>' +
-                        '<tr><td><code>rgba32</code></td><td>32-bit RGBA</td><td>4</td></tr>' +
-                        '<tr><td><code>bgra32</code></td><td>32-bit BGRA</td><td>4</td></tr>' +
-                        '<tr><td><code>yuv420p</code></td><td>Planar YUV 4:2:0</td><td>1.5</td></tr>' +
-                        '<tr><td><code>nv12</code></td><td>Semi-planar YUV 4:2:0</td><td>1.5</td></tr>' +
-                        '<tr><td><code>yuyv422</code></td><td>Packed YUV 4:2:2</td><td>2</td></tr>' +
-                        '<tr><td><code>float32</code></td><td>32-bit float grayscale</td><td>4</td></tr>' +
-                        '<tr><td><code>depth16</code></td><td>16-bit depth (little-endian)</td><td>2</td></tr>' +
-                        '</table>' +
-                        '</div>';
-                    return;
-                }
-
-                var width = config.width;
-                var height = config.height;
-                var headerSize = config.headerSize || 0;
-                var format = config.format || 'rgb24';
-
-                if (!fileUri) {
-                    root.className = 'center';
-                    root.innerHTML = '<div class="error-box"><strong>Error:</strong> Missing file URI for webview fetch.</div>';
-                    return;
-                }
-
-                if (activeAbortController) {
-                    activeAbortController.abort();
-                }
-
-                activeAbortController = typeof AbortController === 'function' ? new AbortController() : null;
-                var currentRenderId = ++activeRenderId;
-                var shouldStreamDecode = streamDecodableFormats.has(format);
-
-                root.className = 'center';
-                root.innerHTML = '<div class="spinner"></div><p>Loading...</p>';
-
-                fetch(fileUri, activeAbortController ? { signal: activeAbortController.signal } : undefined)
-                    .then(async function(response) {
-                        if (!response.ok) {
-                            throw new Error('Failed to read file in webview: HTTP ' + response.status);
-                        }
-
-                        var canvas = document.createElement('canvas');
-                        canvas.width = width;
-                        canvas.height = height;
-
-                        var ctx = canvas.getContext('2d');
-                        if (!ctx) {
-                            throw new Error('2D canvas context is not available.');
-                        }
-                        var imageData = ctx.createImageData(width, height);
-                        var pixels = imageData.data;
-
-                        var isGrayscale = grayscaleStreamFormats.has(format);
-                        var isFloat32 = (format === 'float32');
-                        var rawGray = null;
-                        var grayMinValue = 0;
-                        var grayMaxValue = 255;
-                        var grayWindowMin = 0;
-                        var grayWindowMax = 255;
-                        var isFloatGray = false;
-
-                        if (isGrayscale) {
-                            var grayState = createGrayDecodeState(width, height, headerSize, format);
-                            if (response.body && typeof response.body.getReader === 'function') {
-                                var grayReader = response.body.getReader();
-                                try {
-                                    while (grayState.pixelsWritten < grayState.totalPixels) {
-                                        var grayStep = await grayReader.read();
-                                        if (grayStep.done) { break; }
-                                        if (grayStep.value) { appendGrayChunk(grayState, grayStep.value); }
-                                    }
-                                    if (grayState.pixelsWritten >= grayState.totalPixels && typeof grayReader.cancel === 'function') {
-                                        await grayReader.cancel();
-                                    }
-                                } finally {
-                                    grayReader.releaseLock();
-                                }
-                            } else {
-                                var rawBuf = new Uint8Array(await response.arrayBuffer());
-                                appendGrayChunk(grayState, rawBuf);
-                            }
-                            rawGray = grayState.rawGray;
-                            grayMaxValue = grayState.maxValue;
-                            var autoMin = grayState.autoMin;
-                            var autoMax = grayState.autoMax;
-                            if (autoMin >= autoMax) { autoMin = 0; autoMax = grayMaxValue; }
-                            grayWindowMin = autoMin;
-                            grayWindowMax = autoMax;
-                            applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
-                        } else if (isFloat32) {
-                            var f32State = createFloat32DecodeState(width, height, headerSize);
-                            if (response.body && typeof response.body.getReader === 'function') {
-                                var f32Reader = response.body.getReader();
-                                try {
-                                    while (f32State.pixelsWritten < f32State.totalPixels) {
-                                        var f32Step = await f32Reader.read();
-                                        if (f32Step.done) { break; }
-                                        if (f32Step.value) { appendFloat32Chunk(f32State, f32Step.value); }
-                                    }
-                                    if (f32State.pixelsWritten >= f32State.totalPixels && typeof f32Reader.cancel === 'function') {
-                                        await f32Reader.cancel();
-                                    }
-                                } finally {
-                                    f32Reader.releaseLock();
-                                }
-                            } else {
-                                var f32Buf = new Uint8Array(await response.arrayBuffer());
-                                appendFloat32Chunk(f32State, f32Buf);
-                            }
-                            rawGray = f32State.rawGrayF32;
-                            isFloatGray = true;
-                            var f32AutoMin = f32State.autoMin;
-                            var f32AutoMax = f32State.autoMax;
-                            if (!isFinite(f32AutoMin) || !isFinite(f32AutoMax) || f32AutoMin >= f32AutoMax) {
-                                f32AutoMin = 0; f32AutoMax = 1;
-                            }
-                            grayMinValue = f32AutoMin;
-                            grayMaxValue = f32AutoMax;
-                            grayWindowMin = f32AutoMin;
-                            grayWindowMax = f32AutoMax;
-                            applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
-                        } else if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
-                            var reader = response.body.getReader();
-                            var decodeState = createRawImageDecodeState(width, height, headerSize, format);
-                            try {
-                                while (decodeState.pixelsWritten < decodeState.totalPixels) {
-                                    var step = await reader.read();
-                                    if (step.done) {
-                                        break;
-                                    }
-                                    if (step.value) {
-                                        appendRawImageChunk(decodeState, step.value, pixels);
-                                    }
-                                }
-                                if (decodeState.pixelsWritten >= decodeState.totalPixels && typeof reader.cancel === 'function') {
-                                    await reader.cancel();
-                                }
-                            } finally {
-                                reader.releaseLock();
-                            }
-                        } else {
-                            var rawBytes = new Uint8Array(await response.arrayBuffer());
-                            imageData.data.set(decodeRawImageToRgba(rawBytes.subarray(headerSize), width, height, format));
-                        }
-
-                        if (currentRenderId !== activeRenderId) {
-                            return;
-                        }
-
-                        ctx.putImageData(imageData, 0, 0);
-
-                        root.className = 'viewer';
-                        root.innerHTML = '';
-
-                        var viewerHeader = document.createElement('div');
-                        viewerHeader.className = 'viewer-header';
-
-                        var infoBar = document.createElement('div');
-                        infoBar.className = 'info-bar';
-                        infoBar.textContent =
-                            width +
-                            ' \xd7 ' +
-                            height +
-                            ' | ' +
-                            format +
-                            ' | header: ' +
-                            headerSize +
-                            ' B | file: ' +
-                            fileSize +
-                            ' B | source: ' +
-                            (configSource || '.rawimagerc');
-
-                        var exportButton = document.createElement('button');
-                        exportButton.type = 'button';
-                        exportButton.className = 'action-button';
-                        exportButton.textContent = 'Export PNG';
-                        exportButton.addEventListener('click', function() {
-                            vscode.postMessage({ type: 'savePng', dataUrl: canvas.toDataURL('image/png') });
-                        });
-
-                        var fitButton = document.createElement('button');
-                        fitButton.type = 'button';
-                        fitButton.className = 'action-button active';
-                        fitButton.textContent = 'Fit';
-
-                        var zoom1to1Button = document.createElement('button');
-                        zoom1to1Button.type = 'button';
-                        zoom1to1Button.className = 'action-button';
-                        zoom1to1Button.textContent = '1:1';
-
-                        var viewport = document.createElement('div');
-                        viewport.className = 'canvas-viewport';
-
-                        var zoomIndicator = document.createElement('div');
-                        zoomIndicator.className = 'zoom-indicator';
-                        zoomIndicator.textContent = '100%';
-
-                        var zoomHint = document.createElement('div');
-                        zoomHint.className = 'zoom-hint';
-                        zoomHint.textContent = 'Ctrl+Scroll: zoom \u00b7 Drag: pan \u00b7 Dbl-click: fit';
-
-                        canvas.style.transformOrigin = '0 0';
-
-                        var panX = 0;
-                        var panY = 0;
-                        var zoom = 1.0;
-                        var fitMode = true;
-                        var isPanning = false;
-                        var dragStartX = 0;
-                        var dragStartY = 0;
-                        var dragStartPanX = 0;
-                        var dragStartPanY = 0;
-
-                        function applyTransform() {
-                            canvas.style.transform = 'translate(' + panX + 'px, ' + panY + 'px) scale(' + zoom + ')';
-                            zoomIndicator.textContent = Math.round(zoom * 100) + '%';
-                        }
-
-                        function fitToViewport() {
-                            var vw = viewport.clientWidth;
-                            var vh = viewport.clientHeight;
-                            if (vw > 0 && vh > 0 && canvas.width > 0 && canvas.height > 0) {
-                                zoom = Math.min(vw / canvas.width, vh / canvas.height);
-                                panX = (vw - canvas.width * zoom) / 2;
-                                panY = (vh - canvas.height * zoom) / 2;
-                            } else {
-                                zoom = 1;
-                                panX = 0;
-                                panY = 0;
-                            }
-                            applyTransform();
-                        }
-
-                        function setFitMode(enabled) {
-                            fitMode = enabled;
-                            if (enabled) {
-                                fitButton.classList.add('active');
-                                fitToViewport();
-                            } else {
-                                fitButton.classList.remove('active');
-                            }
-                        }
-
-                        fitButton.addEventListener('click', function() {
-                            setFitMode(!fitMode);
-                        });
-
-                        zoom1to1Button.addEventListener('click', function() {
-                            setFitMode(false);
-                            zoom = 1.0;
-                            var vw = viewport.clientWidth;
-                            var vh = viewport.clientHeight;
-                            panX = (vw - canvas.width) / 2;
-                            panY = (vh - canvas.height) / 2;
-                            applyTransform();
-                        });
-
-                        viewport.addEventListener('wheel', function(e) {
-                            if (!e.ctrlKey) { return; }
-                            e.preventDefault();
-                            fitMode = false;
-                            fitButton.classList.remove('active');
-                            var rect = viewport.getBoundingClientRect();
-                            var cx = (e.clientX - rect.left - panX) / zoom;
-                            var cy = (e.clientY - rect.top - panY) / zoom;
-                            var factor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
-                            zoom = Math.max(0.01, Math.min(32, zoom * factor));
-                            panX = (e.clientX - rect.left) - cx * zoom;
-                            panY = (e.clientY - rect.top) - cy * zoom;
-                            applyTransform();
-                        }, { passive: false });
-
-                        viewport.addEventListener('mousedown', function(e) {
-                            if (e.button !== 0) { return; }
-                            isPanning = true;
-                            dragStartX = e.clientX;
-                            dragStartY = e.clientY;
-                            dragStartPanX = panX;
-                            dragStartPanY = panY;
-                            viewport.classList.add('panning');
-                            e.preventDefault();
-                        });
-
-                        window.addEventListener('mousemove', function(e) {
-                            if (!isPanning) { return; }
-                            var dx = e.clientX - dragStartX;
-                            var dy = e.clientY - dragStartY;
-                            if (fitMode && (Math.abs(dx) > 2 || Math.abs(dy) > 2)) {
-                                fitMode = false;
-                                fitButton.classList.remove('active');
-                            }
-                            panX = dragStartPanX + dx;
-                            panY = dragStartPanY + dy;
-                            applyTransform();
-                        });
-
-                        window.addEventListener('mouseup', function() {
-                            if (isPanning) {
-                                isPanning = false;
-                                viewport.classList.remove('panning');
-                            }
-                        });
-
-                        viewport.addEventListener('dblclick', function() {
-                            setFitMode(true);
-                        });
-
-                        if (typeof ResizeObserver === 'function') {
-                            var resizeObserver = new ResizeObserver(function() {
-                                if (fitMode) {
-                                    fitToViewport();
-                                }
-                            });
-                            resizeObserver.observe(viewport);
-                        }
-
-                        viewerHeader.appendChild(infoBar);
-                        viewerHeader.appendChild(exportButton);
-                        viewerHeader.appendChild(fitButton);
-                        viewerHeader.appendChild(zoom1to1Button);
-                        root.appendChild(viewerHeader);
-
-                        viewport.appendChild(canvas);
-                        viewport.appendChild(zoomIndicator);
-                        viewport.appendChild(zoomHint);
-                        root.appendChild(viewport);
-
-                        requestAnimationFrame(fitToViewport);
-
-                        var pixelInfoBar = document.createElement('div');
-                        pixelInfoBar.className = 'pixel-info-bar';
-                        root.appendChild(pixelInfoBar);
-
-                        canvas.addEventListener('mousemove', function(e) {
-                            var rect = canvas.getBoundingClientRect();
-                            var scaleX = canvas.width / rect.width;
-                            var scaleY = canvas.height / rect.height;
-                            var px = Math.floor((e.clientX - rect.left) * scaleX);
-                            var py = Math.floor((e.clientY - rect.top) * scaleY);
-                            if (px < 0 || px >= width || py < 0 || py >= height) {
-                                pixelInfoBar.textContent = '';
-                                return;
-                            }
-                            var text = '(' + px + ', ' + py + ')';
-                            if (rawGray !== null) {
-                                var rawVal = rawGray[py * width + px];
-                                text += '  Gray: ' + (isFloatGray ? rawVal.toFixed(4) : rawVal);
-                            } else {
-                                var idx4 = (py * width + px) * 4;
-                                text += '  R: ' + imageData.data[idx4] + '  G: ' + imageData.data[idx4 + 1] + '  B: ' + imageData.data[idx4 + 2];
-                            }
-                            pixelInfoBar.textContent = text;
-                        });
-
-                        canvas.addEventListener('mouseleave', function() {
-                            pixelInfoBar.textContent = '';
-                        });
-
-                        if (rawGray !== null) {
-                            var totalPx = width * height;
-                            var wlControls = document.createElement('div');
-                            wlControls.className = 'window-controls';
-
-                            var minValSpan = document.createElement('span');
-                            minValSpan.textContent = isFloatGray ? grayWindowMin.toFixed(3) : String(grayWindowMin);
-                            var minLbl = document.createElement('label');
-                            minLbl.appendChild(document.createTextNode('Min\u00a0'));
-                            var minSlider = document.createElement('input');
-                            minSlider.type = 'range';
-                            minSlider.min = String(grayMinValue);
-                            minSlider.max = String(grayMaxValue);
-                            minSlider.value = String(grayWindowMin);
-                            if (isFloatGray) { minSlider.step = 'any'; }
-                            minLbl.appendChild(minSlider);
-                            minLbl.appendChild(document.createTextNode('\u00a0'));
-                            minLbl.appendChild(minValSpan);
-
-                            var maxValSpan = document.createElement('span');
-                            maxValSpan.textContent = isFloatGray ? grayWindowMax.toFixed(3) : String(grayWindowMax);
-                            var maxLbl = document.createElement('label');
-                            maxLbl.appendChild(document.createTextNode('Max\u00a0'));
-                            var maxSlider = document.createElement('input');
-                            maxSlider.type = 'range';
-                            maxSlider.min = String(grayMinValue);
-                            maxSlider.max = String(grayMaxValue);
-                            maxSlider.value = String(grayWindowMax);
-                            if (isFloatGray) { maxSlider.step = 'any'; }
-                            maxLbl.appendChild(maxSlider);
-                            maxLbl.appendChild(document.createTextNode('\u00a0'));
-                            maxLbl.appendChild(maxValSpan);
-
-                            var resetBtn = document.createElement('button');
-                            resetBtn.type = 'button';
-                            resetBtn.className = 'window-reset';
-                            resetBtn.textContent = 'Reset';
-
-                            var initialMin = grayWindowMin;
-                            var initialMax = grayWindowMax;
-                            var capturedRawGray = rawGray;
-                            var capturedCtx = ctx;
-                            var capturedImageData = imageData;
-                            var capturedIsFloat = isFloatGray;
-                            var rafPending = false;
-
-                            function readSliderVal(slider) {
-                                return capturedIsFloat ? parseFloat(slider.value) : parseInt(slider.value, 10);
-                            }
-                            function fmtSliderVal(val) {
-                                return capturedIsFloat ? val.toFixed(3) : String(val);
-                            }
-
-                            function scheduleWindowRender() {
-                                if (!rafPending) {
-                                    rafPending = true;
-                                    requestAnimationFrame(function() {
-                                        rafPending = false;
-                                        var wMin = readSliderVal(minSlider);
-                                        var wMax = readSliderVal(maxSlider);
-                                        minValSpan.textContent = fmtSliderVal(wMin);
-                                        maxValSpan.textContent = fmtSliderVal(wMax);
-                                        applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data);
-                                        capturedCtx.putImageData(capturedImageData, 0, 0);
-                                    });
-                                }
-                            }
-
-                            minSlider.addEventListener('input', function() {
-                                var wMin = readSliderVal(minSlider);
-                                var wMax = readSliderVal(maxSlider);
-                                if (wMin > wMax) { minSlider.value = String(wMax); }
-                                scheduleWindowRender();
-                            });
-                            maxSlider.addEventListener('input', function() {
-                                var wMin = readSliderVal(minSlider);
-                                var wMax = readSliderVal(maxSlider);
-                                if (wMax < wMin) { maxSlider.value = String(wMin); }
-                                scheduleWindowRender();
-                            });
-                            resetBtn.addEventListener('click', function() {
-                                minSlider.value = String(initialMin);
-                                maxSlider.value = String(initialMax);
-                                scheduleWindowRender();
-                            });
-
-                            wlControls.appendChild(minLbl);
-                            wlControls.appendChild(maxLbl);
-                            wlControls.appendChild(resetBtn);
-                            root.appendChild(wlControls);
-                        }
-                    })
-                    .catch(function(err) {
-                        if (err && err.name === 'AbortError') {
-                            return;
-                        }
-                        if (currentRenderId !== activeRenderId) {
-                            return;
-                        }
-                        root.className = 'center';
-                        root.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + escapeHtml(String(err)) + '</div>';
-                    });
-            }
-        });
-
-        window.addEventListener('error', function(event) {
-            clearReadyTimer();
-            showRuntimeError(event.error || event.message || 'Unknown script error');
-        });
-
-        window.addEventListener('unhandledrejection', function(event) {
-            clearReadyTimer();
-            showRuntimeError(event.reason || 'Unhandled promise rejection');
-        });
-
-        // Send 'ready' on an interval until the extension acknowledges it, in case
-        // the first message is dropped due to startup timing.
-        readyTimer = setInterval(function() {
-            vscode.postMessage({ type: 'ready' });
-        }, 250);
-        vscode.postMessage({ type: 'ready' });
-
-        // Show a visible error instead of spinning forever if the extension host
-        // never sends a 'render' message.
-        startupTimeout = setTimeout(function() {
-            var root = document.getElementById('root');
-            if (!root) {
-                return;
-            }
-            root.className = 'center';
-            root.innerHTML = '<div class="error-box"><strong>Error:</strong> Extension host did not respond in time. Reload the extension host and reopen the file.</div>';
-        }, 4000);
-    </script>
-</body>
-</html>`;
-}
-
+// =============================================================================
+// 拡張機能のライフサイクル
+// =============================================================================
+
+/**
+ * activate — VS Code が拡張機能を有効化したときに1回だけ呼ばれます。
+ *
+ * `context.subscriptions` にコマンドやプロバイダーを登録します。
+ * 拡張機能が無効化されたとき、VS Code が自動で `dispose()` を呼んで解放します。
+ */
 export function activate(context: vscode.ExtensionContext): void {
+  // カスタムエディターを登録する（.raw ファイルを開いたときに使われる）
   context.subscriptions.push(RawImageEditorProvider.register(context));
 
+  // コマンドパレットから任意のファイルを Raw Image Viewer で開くコマンド
   context.subscriptions.push(
     vscode.commands.registerCommand('rawviewer.openAsRawImage', async (uri?: vscode.Uri) => {
       if (!uri) {
+        // コマンドパレットから呼んだ場合はアクティブエディターのファイルを使う
         const editor = vscode.window.activeTextEditor;
         if (editor) {
           uri = editor.document.uri;
@@ -1984,8 +498,10 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
+  // .rawimagerc の雛形を作成・開くコマンド
   context.subscriptions.push(
     vscode.commands.registerCommand('rawviewer.createConfig', async () => {
+      // 作成先ディレクトリを決める: アクティブファイルのディレクトリ → ワークスペースルート
       let targetDir: string | undefined;
 
       const activeEditor = vscode.window.activeTextEditor;
@@ -2006,6 +522,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       const configUri = vscode.Uri.file(path.join(targetDir, '.rawimagerc'));
+
+      // パターンベースの設定ファイルの雛形
       const template = {
         patterns: {
           '*': {
@@ -2020,12 +538,13 @@ export function activate(context: vscode.ExtensionContext): void {
           },
         },
       };
+
       try {
         try {
           await vscode.workspace.fs.stat(configUri);
-          // File exists, just open it
+          // ファイルが既に存在する場合はそのまま開く
         } catch {
-          // File does not exist, create it
+          // ファイルが存在しない場合は新規作成する
           await vscode.workspace.fs.writeFile(
             configUri,
             Buffer.from(JSON.stringify(template, null, 2), 'utf8')
@@ -2042,4 +561,9 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
+/**
+ * deactivate — VS Code が拡張機能を無効化するときに呼ばれます。
+ * `context.subscriptions` のリソースは VS Code が自動で解放するので
+ * ここでは特に何もしなくて大丈夫です。
+ */
 export function deactivate(): void {}
