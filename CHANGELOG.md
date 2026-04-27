@@ -6,6 +6,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-04-27
+
 ### Added
 
 - **Pattern-based `.rawimagerc`** — configuration is now structured as a `patterns` object whose keys are glob patterns (like `.editorconfig`), enabling per-file or per-directory settings from a single config file
@@ -16,6 +18,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 - **Pixel value inspection** — status bar below the canvas shows cursor coordinates and per-format raw pixel values (RGB channels for color images; raw Gray value for grayscale/depth/float formats)
 - Manual GitHub Actions release dispatch so GitHub Mobile can publish releases without pushing tags
 - Release workflow support for both manual dispatch and `v*` tag pushes
+
+### Changed
+
+- Large-scale refactor: split `extension.ts` into 5 focused modules (`types.ts`, `decoder.ts`, `config.ts`, `webviewHtml.ts`) for improved maintainability and code organization
 
 ## [0.0.3] - 2026-04-15
 
