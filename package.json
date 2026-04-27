@@ -49,6 +49,10 @@
       {
         "command": "rawviewer.openAsRawImage",
         "title": "Open as Raw Image"
+      },
+      {
+        "command": "rawviewer.createConfig",
+        "title": "Raw Image Viewer: Create .rawimagerc"
       }
     ],
     "menus": {

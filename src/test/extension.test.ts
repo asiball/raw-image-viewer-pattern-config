@@ -31,21 +31,33 @@ suite('Extension Test Suite', () => {
 
   test('parseRawImageConfig applies defaults', () => {
     assert.deepStrictEqual(
-      parseRawImageConfig(JSON.stringify({ width: 64, height: 32 }), 'D:\\repo\\.rawimagerc'),
+      parseRawImageConfig(
+        JSON.stringify({ patterns: { '*': { width: 64, height: 32 } } }),
+        'D:\\repo\\.rawimagerc',
+        'D:\\repo\\frame.raw'
+      ),
       { width: 64, height: 32, headerSize: 0, format: 'rgb24' }
     );
   });
 
   test('parseRawImageConfig rejects invalid numeric fields', () => {
     const cases: Array<[Record<string, unknown>, RegExp]> = [
-      [{ width: 0, height: 32 }, /"width" must be a positive integer/],
-      [{ width: 64, height: -1 }, /"height" must be a positive integer/],
-      [{ width: 64, height: 32, headerSize: 1.5 }, /"headerSize" must be a non-negative integer/],
+      [{ patterns: { '*': { width: 0, height: 32 } } }, /"width" must be a positive integer/],
+      [{ patterns: { '*': { width: 64, height: -1 } } }, /"height" must be a positive integer/],
+      [
+        { patterns: { '*': { width: 64, height: 32, headerSize: 1.5 } } },
+        /"headerSize" must be a non-negative integer/,
+      ],
     ];
 
     for (const [input, expectedMessage] of cases) {
       assert.throws(
-        () => parseRawImageConfig(JSON.stringify(input), 'D:\\repo\\.rawimagerc'),
+        () =>
+          parseRawImageConfig(
+            JSON.stringify(input),
+            'D:\\repo\\.rawimagerc',
+            'D:\\repo\\frame.raw'
+          ),
         (error: unknown) => {
           assert.ok(error instanceof Error);
           assert.match(error.message, expectedMessage);
@@ -59,8 +71,9 @@ suite('Extension Test Suite', () => {
     assert.throws(
       () =>
         parseRawImageConfig(
-          JSON.stringify({ width: 64, height: 32, format: 'yuv420' }),
-          'D:\\repo\\.rawimagerc'
+          JSON.stringify({ patterns: { '*': { width: 64, height: 32, format: 'yuv420' } } }),
+          'D:\\repo\\.rawimagerc',
+          'D:\\repo\\frame.raw'
         ),
       (error: unknown) => {
         assert.ok(error instanceof Error);
@@ -73,8 +86,11 @@ suite('Extension Test Suite', () => {
   test('parseRawImageConfig accepts supported YUV formats', () => {
     assert.deepStrictEqual(
       parseRawImageConfig(
-        JSON.stringify({ width: 4, height: 2, headerSize: 16, format: 'yuv420p' }),
-        'D:\\repo\\.rawimagerc'
+        JSON.stringify({
+          patterns: { '*': { width: 4, height: 2, headerSize: 16, format: 'yuv420p' } },
+        }),
+        'D:\\repo\\.rawimagerc',
+        'D:\\repo\\frame.raw'
       ),
       { width: 4, height: 2, headerSize: 16, format: 'yuv420p' }
     );
@@ -557,15 +573,107 @@ suite('Extension Test Suite', () => {
     assert.strictEqual(pixels[3], 255);
   });
 
+  test('parseRawImageConfig applies glob pattern overrides', () => {
+    const config = {
+      patterns: {
+        '*': {
+          width: 100,
+          height: 100,
+        },
+        '**/thumbnails/*.bin': {
+          width: 32,
+          height: 32,
+        },
+        '*.depth': {
+          format: 'depth16',
+        },
+      },
+    };
+    const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
+
+    // Match thumbnail pattern (nested under a subdirectory)
+    const thumbFile =
+      process.platform === 'win32'
+        ? 'C:\\repo\\data\\thumbnails\\icon.bin'
+        : '/repo/data/thumbnails/icon.bin';
+    assert.deepStrictEqual(parseRawImageConfig(JSON.stringify(config), configPath, thumbFile), {
+      width: 32,
+      height: 32,
+      headerSize: 0,
+      format: 'rgb24',
+    });
+
+    // Match depth pattern
+    const depthFile =
+      process.platform === 'win32' ? 'C:\\repo\\frame.depth' : '/repo/frame.depth';
+    assert.deepStrictEqual(parseRawImageConfig(JSON.stringify(config), configPath, depthFile), {
+      width: 100,
+      height: 100,
+      headerSize: 0,
+      format: 'depth16',
+    });
+
+    // No match
+    const otherFile = process.platform === 'win32' ? 'C:\\repo\\other.raw' : '/repo/other.raw';
+    assert.deepStrictEqual(parseRawImageConfig(JSON.stringify(config), configPath, otherFile), {
+      width: 100,
+      height: 100,
+      headerSize: 0,
+      format: 'rgb24',
+    });
+  });
+
+  test('parseRawImageConfig **/ matches top-level directory relative to config', () => {
+    // **/thumbnails/*.bin must match thumbnails/icon.bin (no leading path segment),
+    // not just sub/thumbnails/icon.bin — this was a bug in the original globToRegExp.
+    const config = {
+      patterns: {
+        '*': { width: 100, height: 100 },
+        '**/thumbnails/*.bin': { width: 32, height: 32 },
+      },
+    };
+    const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
+
+    // File sits directly inside thumbnails/ — no intermediate path segment
+    const topLevelThumb =
+      process.platform === 'win32'
+        ? 'C:\\repo\\thumbnails\\icon.bin'
+        : '/repo/thumbnails/icon.bin';
+    assert.deepStrictEqual(
+      parseRawImageConfig(JSON.stringify(config), configPath, topLevelThumb),
+      { width: 32, height: 32, headerSize: 0, format: 'rgb24' }
+    );
+
+    // File sits two levels deep — should also match
+    const deepThumb =
+      process.platform === 'win32'
+        ? 'C:\\repo\\a\\b\\thumbnails\\icon.bin'
+        : '/repo/a/b/thumbnails/icon.bin';
+    assert.deepStrictEqual(
+      parseRawImageConfig(JSON.stringify(config), configPath, deepThumb),
+      { width: 32, height: 32, headerSize: 0, format: 'rgb24' }
+    );
+  });
+
   test('rawimagerc.schema.json format enum matches extension supported formats', () => {
     const schemaPath = path.join(__dirname, '..', '..', 'schemas', 'rawimagerc.schema.json');
-    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8')) as {
-      properties: { format: { enum: string[]; enumDescriptions: string[] } };
+    const schemaContent = fs.readFileSync(schemaPath, 'utf8');
+    const schema = JSON.parse(schemaContent) as {
+      definitions: {
+        imageConfig: {
+          properties: {
+            format: {
+              enum: string[];
+              enumDescriptions: string[];
+            };
+          };
+        };
+      };
     };
-    const schemaFormats: string[] = schema.properties.format.enum;
+    const schemaFormats: string[] = schema.definitions.imageConfig.properties.format.enum;
     assert.deepStrictEqual(schemaFormats, [...supportedFormats]);
     assert.strictEqual(
-      schema.properties.format.enumDescriptions.length,
+      schema.definitions.imageConfig.properties.format.enumDescriptions.length,
       schemaFormats.length,
       'enumDescriptions count must match enum count'
     );
