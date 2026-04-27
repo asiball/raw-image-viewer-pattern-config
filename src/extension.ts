@@ -41,10 +41,29 @@ interface RawImageConfigRecord {
 }
 
 function globToRegExp(glob: string): RegExp {
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-  const withStar = escaped.replace(/\*/g, '([^/\\\\]*)');
-  const withDoubleStar = withStar.replace(/\(\[\^\/\\\\\]\*\)\(\[\^\/\\\\\]\*\)/g, '.*');
-  return new RegExp(`^${withDoubleStar}$`);
+  // Scan character by character so ** and * are handled without placeholders.
+  // **/ → any path prefix (zero or more segments), ** → anything, * → one segment.
+  let pattern = '';
+  let i = 0;
+  while (i < glob.length) {
+    const ch = glob[i];
+    if (ch === '*' && glob[i + 1] === '*') {
+      if (glob[i + 2] === '/') {
+        pattern += '(?:.*/)?';
+        i += 3;
+      } else {
+        pattern += '.*';
+        i += 2;
+      }
+    } else if (ch === '*') {
+      pattern += '[^/]*';
+      i += 1;
+    } else {
+      pattern += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+      i += 1;
+    }
+  }
+  return new RegExp(`^${pattern}$`);
 }
 
 interface RawImageFallbackSettings {
@@ -1397,6 +1416,7 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         var startupTimeout = null;
         var activeAbortController = null;
         var activeRenderId = 0;
+        var activeResizeObserver = null;
 
         ${getBytesPerPixel.toString()}
         ${createRawImageDecodeState.toString()}
@@ -1495,6 +1515,10 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
 
                 if (activeAbortController) {
                     activeAbortController.abort();
+                }
+                if (activeResizeObserver) {
+                    activeResizeObserver.disconnect();
+                    activeResizeObserver = null;
                 }
 
                 activeAbortController = typeof AbortController === 'function' ? new AbortController() : null;
@@ -1777,12 +1801,12 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         });
 
                         if (typeof ResizeObserver === 'function') {
-                            var resizeObserver = new ResizeObserver(function() {
+                            activeResizeObserver = new ResizeObserver(function() {
                                 if (fitMode) {
                                     fitToViewport();
                                 }
                             });
-                            resizeObserver.observe(viewport);
+                            activeResizeObserver.observe(viewport);
                         }
 
                         viewerHeader.appendChild(infoBar);
@@ -1982,67 +2006,64 @@ export function activate(context: vscode.ExtensionContext): void {
           RawImageEditorProvider.viewType
         );
       }
-    }
-    )
-    );
+    })
+  );
 
-    context.subscriptions.push(
+  context.subscriptions.push(
     vscode.commands.registerCommand('rawviewer.createConfig', async () => {
-    let targetDir: string | undefined;
+      let targetDir: string | undefined;
 
-    const activeEditor = vscode.window.activeTextEditor;
-    if (activeEditor) {
-      targetDir = path.dirname(activeEditor.document.uri.fsPath);
-    } else {
-      const workspaceFolders = vscode.workspace.workspaceFolders;
-      if (workspaceFolders && workspaceFolders.length > 0) {
-        targetDir = workspaceFolders[0].uri.fsPath;
+      const activeEditor = vscode.window.activeTextEditor;
+      if (activeEditor) {
+        targetDir = path.dirname(activeEditor.document.uri.fsPath);
+      } else {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (workspaceFolders && workspaceFolders.length > 0) {
+          targetDir = workspaceFolders[0].uri.fsPath;
+        }
       }
-    }
 
-    if (!targetDir) {
-      void vscode.window.showErrorMessage(
-        'Raw Image Viewer: Could not determine where to create .rawimagerc. Open a file or workspace first.'
-      );
-      return;
-    }
+      if (!targetDir) {
+        void vscode.window.showErrorMessage(
+          'Raw Image Viewer: Could not determine where to create .rawimagerc. Open a file or workspace first.'
+        );
+        return;
+      }
 
-    const configUri = vscode.Uri.file(path.join(targetDir, '.rawimagerc'));
-    const template = {
-      patterns: {
-        '*': {
-          width: 1920,
-          height: 1080,
-          headerSize: 0,
-          format: 'rgb24',
+      const configUri = vscode.Uri.file(path.join(targetDir, '.rawimagerc'));
+      const template = {
+        patterns: {
+          '*': {
+            width: 1920,
+            height: 1080,
+            headerSize: 0,
+            format: 'rgb24',
+          },
+          '**/thumbnails/*.bin': {
+            width: 128,
+            height: 128,
+          },
         },
-        '**/thumbnails/*.bin': {
-          width: 128,
-          height: 128,
-        },
-      },
-    };
-    try {
+      };
       try {
-        await vscode.workspace.fs.stat(configUri);
-        // File exists, just open it
-      } catch {
-        // File does not exist, create it
-        await vscode.workspace.fs.writeFile(
-          configUri,
-          Buffer.from(JSON.stringify(template, null, 2), 'utf8')
+        try {
+          await vscode.workspace.fs.stat(configUri);
+        } catch {
+          await vscode.workspace.fs.writeFile(
+            configUri,
+            Buffer.from(JSON.stringify(template, null, 2), 'utf8')
+          );
+        }
+        const doc = await vscode.workspace.openTextDocument(configUri);
+        await vscode.window.showTextDocument(doc);
+      } catch (err: unknown) {
+        void vscode.window.showErrorMessage(
+          `Raw Image Viewer: Failed to create .rawimagerc: ${err instanceof Error ? err.message : String(err)}`
         );
       }
-      const doc = await vscode.workspace.openTextDocument(configUri);
-      await vscode.window.showTextDocument(doc);
-    } catch (err: unknown) {
-      void vscode.window.showErrorMessage(
-        `Raw Image Viewer: Failed to create .rawimagerc: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
     })
-    );
-    }
+  );
+}
 
 
 export function deactivate(): void {}

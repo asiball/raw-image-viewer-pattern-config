@@ -591,7 +591,7 @@ suite('Extension Test Suite', () => {
     };
     const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
 
-    // Match thumbnail pattern
+    // Match thumbnail pattern (nested under a subdirectory)
     const thumbFile =
       process.platform === 'win32'
         ? 'C:\\repo\\data\\thumbnails\\icon.bin'
@@ -621,6 +621,38 @@ suite('Extension Test Suite', () => {
       headerSize: 0,
       format: 'rgb24',
     });
+  });
+
+  test('parseRawImageConfig **/ matches top-level directory relative to config', () => {
+    // **/thumbnails/*.bin must match thumbnails/icon.bin (no leading path segment),
+    // not just sub/thumbnails/icon.bin — this was a bug in the original globToRegExp.
+    const config = {
+      patterns: {
+        '*': { width: 100, height: 100 },
+        '**/thumbnails/*.bin': { width: 32, height: 32 },
+      },
+    };
+    const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
+
+    // File sits directly inside thumbnails/ — no intermediate path segment
+    const topLevelThumb =
+      process.platform === 'win32'
+        ? 'C:\\repo\\thumbnails\\icon.bin'
+        : '/repo/thumbnails/icon.bin';
+    assert.deepStrictEqual(
+      parseRawImageConfig(JSON.stringify(config), configPath, topLevelThumb),
+      { width: 32, height: 32, headerSize: 0, format: 'rgb24' }
+    );
+
+    // File sits two levels deep — should also match
+    const deepThumb =
+      process.platform === 'win32'
+        ? 'C:\\repo\\a\\b\\thumbnails\\icon.bin'
+        : '/repo/a/b/thumbnails/icon.bin';
+    assert.deepStrictEqual(
+      parseRawImageConfig(JSON.stringify(config), configPath, deepThumb),
+      { width: 32, height: 32, headerSize: 0, format: 'rgb24' }
+    );
   });
 
   test('rawimagerc.schema.json format enum matches extension supported formats', () => {
