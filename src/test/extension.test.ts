@@ -5,6 +5,8 @@ import * as path from 'path';
 // You can import and use all API from the 'vscode' module
 // as well as import your extension to test it
 import * as vscode from 'vscode';
+
+// デコード関数は decoder.ts から
 import {
   appendFloat32Chunk,
   appendGrayChunk,
@@ -12,18 +14,28 @@ import {
   applyWindowLevel,
   createFloat32DecodeState,
   createGrayDecodeState,
-  createInitialRenderHandshake,
   createRawImageDecodeState,
   decodeRawImageToRgba,
-  decodePngDataUrl,
   getBytesPerPixel,
+} from '../decoder';
+
+// 設定関連の関数は config.ts から
+import {
   getConfigSearchDirectories,
-  getLocalResourceRoots,
-  getSuggestedPngSaveUri,
   inferRawImageConfigFromFilename,
   parseRawImageConfig,
   resolveFallbackRawImageConfig,
-  supportedFormats,
+} from '../config';
+
+// 型定数は types.ts から
+import { supportedFormats } from '../types';
+
+// VS Code 統合層の関数は extension.ts から
+import {
+  createInitialRenderHandshake,
+  decodePngDataUrl,
+  getLocalResourceRoots,
+  getSuggestedPngSaveUri,
 } from '../extension';
 
 suite('Extension Test Suite', () => {
