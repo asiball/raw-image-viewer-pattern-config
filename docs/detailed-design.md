@@ -141,7 +141,10 @@ sequenceDiagram
 - `yuv420p` と `nv12` は幅・高さが偶数である必要がある
 - `yuyv422` は幅が偶数である必要がある
 - Webview スクリプトは nonce 付き CSP 下で実行する
-- Webview の参照ルートは必要最小限のディレクトリに制限する
+- Webview の参照ルート (`localResourceRoots`) は、セキュリティのため以下のディレクトリに制限される。
+  - 表示中のファイルが存在するディレクトリ
+  - `.rawimagerc` が別の親ディレクトリで見つかった場合は、そのディレクトリ
+- Webview 内の `fetch()` は VS Code の Webview URI スキームを使用してファイルを読み込む。
 
 ## 7. エラーハンドリング
 
