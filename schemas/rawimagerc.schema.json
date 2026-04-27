@@ -4,64 +4,85 @@
   "description": "Configuration for rendering raw binary image files with the Raw Image Viewer VS Code extension.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["width", "height"],
+  "required": ["patterns"],
+  "definitions": {
+    "imageConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Image width in pixels."
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Image height in pixels."
+        },
+        "headerSize": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Number of bytes to skip at the start of the file."
+        },
+        "format": {
+          "type": "string",
+          "default": "rgb24",
+          "description": "Pixel format used to interpret the binary image data.",
+          "enum": [
+            "gray8",
+            "gray16le",
+            "gray16be",
+            "rgb24",
+            "bgr24",
+            "rgba32",
+            "bgra32",
+            "yuv420p",
+            "nv12",
+            "yuyv422",
+            "float32",
+            "depth16"
+          ],
+          "enumDescriptions": [
+            "8-bit grayscale (1 byte/pixel)",
+            "16-bit grayscale, little-endian (2 bytes/pixel)",
+            "16-bit grayscale, big-endian (2 bytes/pixel)",
+            "24-bit RGB (3 bytes/pixel)",
+            "24-bit BGR (3 bytes/pixel)",
+            "32-bit RGBA (4 bytes/pixel)",
+            "32-bit BGRA (4 bytes/pixel)",
+            "Planar YUV 4:2:0 — requires even width and height (1.5 bytes/pixel)",
+            "Semi-planar YUV 4:2:0 — requires even width and height (1.5 bytes/pixel)",
+            "Packed YUV 4:2:2 — requires even width (2 bytes/pixel)",
+            "32-bit float grayscale, little-endian — auto window/level (4 bytes/pixel)",
+            "16-bit depth, little-endian — auto window/level (2 bytes/pixel)"
+          ]
+        }
+      }
+    }
+  },
   "properties": {
-    "width": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Image width in pixels."
-    },
-    "height": {
-      "type": "integer",
-      "minimum": 1,
-      "description": "Image height in pixels."
-    },
-    "headerSize": {
-      "type": "integer",
-      "minimum": 0,
-      "default": 0,
-      "description": "Number of bytes to skip at the start of the file."
-    },
-    "format": {
-      "type": "string",
-      "default": "rgb24",
-      "description": "Pixel format used to interpret the binary image data.",
-      "enum": [
-        "gray8",
-        "gray16le",
-        "gray16be",
-        "rgb24",
-        "bgr24",
-        "rgba32",
-        "bgra32",
-        "yuv420p",
-        "nv12",
-        "yuyv422",
-        "float32",
-        "depth16"
-      ],
-      "enumDescriptions": [
-        "8-bit grayscale (1 byte/pixel)",
-        "16-bit grayscale, little-endian (2 bytes/pixel)",
-        "16-bit grayscale, big-endian (2 bytes/pixel)",
-        "24-bit RGB (3 bytes/pixel)",
-        "24-bit BGR (3 bytes/pixel)",
-        "32-bit RGBA (4 bytes/pixel)",
-        "32-bit BGRA (4 bytes/pixel)",
-        "Planar YUV 4:2:0 — requires even width and height (1.5 bytes/pixel)",
-        "Semi-planar YUV 4:2:0 — requires even width and height (1.5 bytes/pixel)",
-        "Packed YUV 4:2:2 — requires even width (2 bytes/pixel)",
-        "32-bit float grayscale, little-endian — auto window/level (4 bytes/pixel)",
-        "16-bit depth, little-endian — auto window/level (2 bytes/pixel)"
-      ]
+    "patterns": {
+      "type": "object",
+      "description": "Glob patterns to configure rendering for specific files or subdirectories.",
+      "additionalProperties": {
+        "$ref": "#/definitions/imageConfig"
+      }
     }
   },
   "examples": [
     {
-      "width": 640,
-      "height": 480,
-      "headerSize": 0,
-      "format": "rgb24"
+      "patterns": {
+        "*": {
+          "width": 640,
+          "height": 480,
+          "format": "rgb24"
+        },
+        "*.depth": {
+          "format": "depth16"
+        }
+      }
     }
   ]
 }

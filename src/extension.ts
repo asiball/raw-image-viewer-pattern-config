@@ -31,6 +31,22 @@ interface RawImageConfig {
   format: RawImageFormat;
 }
 
+interface RawImageConfigRecord {
+  patterns?: Record<string, {
+    width?: number;
+    height?: number;
+    headerSize?: number;
+    format?: RawImageFormat;
+  }>;
+}
+
+function globToRegExp(glob: string): RegExp {
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const withStar = escaped.replace(/\*/g, '([^/\\\\]*)');
+  const withDoubleStar = withStar.replace(/\(\[\^\/\\\\\]\*\)\(\[\^\/\\\\\]\*\)/g, '.*');
+  return new RegExp(`^${withDoubleStar}$`);
+}
+
 interface RawImageFallbackSettings {
   defaultWidth?: number;
   defaultHeight?: number;
@@ -449,7 +465,10 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
       updateWebviewOptions();
       try {
         const resolvedConfig = currentConfigPath
-          ? { config: loadRawImageConfig(currentConfigPath), source: 'rawimagerc' as const }
+          ? {
+              config: loadRawImageConfig(currentConfigPath, document.uri.fsPath),
+              source: 'rawimagerc' as const,
+            }
           : resolveFallbackRawImageConfig(
               document.uri.fsPath,
               getRawImageFallbackSettings(
@@ -623,7 +642,7 @@ export function findConfigPath(filePath: string): string | undefined {
   return undefined;
 }
 
-function isRawImageConfigRecord(value: unknown): value is Record<string, unknown> {
+function isRawImageConfigRecord(value: unknown): value is RawImageConfigRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -694,7 +713,11 @@ function validateOptionalFormat(
   return value as RawImageFormat;
 }
 
-export function parseRawImageConfig(content: string, configPath: string): RawImageConfig {
+export function parseRawImageConfig(
+  content: string,
+  configPath: string,
+  targetFilePath: string
+): RawImageConfig {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
@@ -707,10 +730,36 @@ export function parseRawImageConfig(content: string, configPath: string): RawIma
     throw new Error(`Invalid .rawimagerc at "${configPath}": expected a JSON object.`);
   }
 
-  const width = validatePositiveInteger(parsed.width, 'width', configPath);
-  const height = validatePositiveInteger(parsed.height, 'height', configPath);
-  const headerSize = validateNonNegativeInteger(parsed.headerSize ?? 0, 'headerSize', configPath);
-  const format = parsed.format ?? 'rgb24';
+  // Calculate relative path from config directory to target file
+  const configDir = path.dirname(configPath);
+  let relativePath = path.relative(configDir, targetFilePath);
+  // Normalize to use forward slashes for glob matching
+  relativePath = relativePath.split(path.sep).join('/');
+
+  // Resolve configuration by merging all matching patterns
+  const resolved: {
+    width?: number;
+    height?: number;
+    headerSize?: number;
+    format?: RawImageFormat;
+  } = {};
+
+  if (parsed.patterns) {
+    for (const [pattern, override] of Object.entries(parsed.patterns)) {
+      if (globToRegExp(pattern).test(relativePath)) {
+        Object.assign(resolved, override);
+      }
+    }
+  }
+
+  const width = validatePositiveInteger(resolved.width, 'width', configPath);
+  const height = validatePositiveInteger(resolved.height, 'height', configPath);
+  const headerSize = validateNonNegativeInteger(
+    resolved.headerSize ?? 0,
+    'headerSize',
+    configPath
+  );
+  const format = resolved.format ?? 'rgb24';
 
   if (typeof format !== 'string' || !supportedFormats.includes(format as RawImageFormat)) {
     throw new Error(
@@ -726,8 +775,8 @@ export function parseRawImageConfig(content: string, configPath: string): RawIma
   };
 }
 
-function loadRawImageConfig(configPath: string): RawImageConfig {
-  return parseRawImageConfig(fs.readFileSync(configPath, 'utf8'), configPath);
+function loadRawImageConfig(configPath: string, targetFilePath: string): RawImageConfig {
+  return parseRawImageConfig(fs.readFileSync(configPath, 'utf8'), configPath, targetFilePath);
 }
 
 function escapeRegExp(value: string): string {
@@ -1933,8 +1982,67 @@ export function activate(context: vscode.ExtensionContext): void {
           RawImageEditorProvider.viewType
         );
       }
+    }
+    )
+    );
+
+    context.subscriptions.push(
+    vscode.commands.registerCommand('rawviewer.createConfig', async () => {
+    let targetDir: string | undefined;
+
+    const activeEditor = vscode.window.activeTextEditor;
+    if (activeEditor) {
+      targetDir = path.dirname(activeEditor.document.uri.fsPath);
+    } else {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      if (workspaceFolders && workspaceFolders.length > 0) {
+        targetDir = workspaceFolders[0].uri.fsPath;
+      }
+    }
+
+    if (!targetDir) {
+      void vscode.window.showErrorMessage(
+        'Raw Image Viewer: Could not determine where to create .rawimagerc. Open a file or workspace first.'
+      );
+      return;
+    }
+
+    const configUri = vscode.Uri.file(path.join(targetDir, '.rawimagerc'));
+    const template = {
+      patterns: {
+        '*': {
+          width: 1920,
+          height: 1080,
+          headerSize: 0,
+          format: 'rgb24',
+        },
+        '**/thumbnails/*.bin': {
+          width: 128,
+          height: 128,
+        },
+      },
+    };
+    try {
+      try {
+        await vscode.workspace.fs.stat(configUri);
+        // File exists, just open it
+      } catch {
+        // File does not exist, create it
+        await vscode.workspace.fs.writeFile(
+          configUri,
+          Buffer.from(JSON.stringify(template, null, 2), 'utf8')
+        );
+      }
+      const doc = await vscode.workspace.openTextDocument(configUri);
+      await vscode.window.showTextDocument(doc);
+    } catch (err: unknown) {
+      void vscode.window.showErrorMessage(
+        `Raw Image Viewer: Failed to create .rawimagerc: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
     })
-  );
-}
+    );
+    }
+
 
 export function deactivate(): void {}

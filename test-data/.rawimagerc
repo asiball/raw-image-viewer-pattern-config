@@ -1,0 +1,12 @@
+{
+  "width": 1920,
+  "height": 1080,
+  "headerSize": 0,
+  "format": "rgb24",
+  "patterns": {
+    "**/thumbnails/*.bin": {
+      "width": 128,
+      "height": 128
+    }
+  }
+}
