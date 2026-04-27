@@ -32,38 +32,22 @@ interface RawImageConfig {
 }
 
 interface RawImageConfigRecord {
-  patterns?: Record<string, {
-    width?: number;
-    height?: number;
-    headerSize?: number;
-    format?: RawImageFormat;
-  }>;
+  patterns?: Record<
+    string,
+    {
+      width?: number;
+      height?: number;
+      headerSize?: number;
+      format?: RawImageFormat;
+    }
+  >;
 }
 
 function globToRegExp(glob: string): RegExp {
-  // Scan character by character so ** and * are handled without placeholders.
-  // **/ → any path prefix (zero or more segments), ** → anything, * → one segment.
-  let pattern = '';
-  let i = 0;
-  while (i < glob.length) {
-    const ch = glob[i];
-    if (ch === '*' && glob[i + 1] === '*') {
-      if (glob[i + 2] === '/') {
-        pattern += '(?:.*/)?';
-        i += 3;
-      } else {
-        pattern += '.*';
-        i += 2;
-      }
-    } else if (ch === '*') {
-      pattern += '[^/]*';
-      i += 1;
-    } else {
-      pattern += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
-      i += 1;
-    }
-  }
-  return new RegExp(`^${pattern}$`);
+  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  const withStar = escaped.replace(/\*/g, '([^/\\\\]*)');
+  const withDoubleStar = withStar.replace(/\(\[\^\/\\\\\]\*\)\(\[\^\/\\\\\]\*\)/g, '.*');
+  return new RegExp(`^${withDoubleStar}$`);
 }
 
 interface RawImageFallbackSettings {
@@ -773,11 +757,7 @@ export function parseRawImageConfig(
 
   const width = validatePositiveInteger(resolved.width, 'width', configPath);
   const height = validatePositiveInteger(resolved.height, 'height', configPath);
-  const headerSize = validateNonNegativeInteger(
-    resolved.headerSize ?? 0,
-    'headerSize',
-    configPath
-  );
+  const headerSize = validateNonNegativeInteger(resolved.headerSize ?? 0, 'headerSize', configPath);
   const format = resolved.format ?? 'rgb24';
 
   if (typeof format !== 'string' || !supportedFormats.includes(format as RawImageFormat)) {
@@ -1416,7 +1396,6 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
         var startupTimeout = null;
         var activeAbortController = null;
         var activeRenderId = 0;
-        var activeResizeObserver = null;
 
         ${getBytesPerPixel.toString()}
         ${createRawImageDecodeState.toString()}
@@ -1515,10 +1494,6 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
 
                 if (activeAbortController) {
                     activeAbortController.abort();
-                }
-                if (activeResizeObserver) {
-                    activeResizeObserver.disconnect();
-                    activeResizeObserver = null;
                 }
 
                 activeAbortController = typeof AbortController === 'function' ? new AbortController() : null;
@@ -1801,12 +1776,12 @@ function getWebviewHtml(nonce: string, cspSource: string): string {
                         });
 
                         if (typeof ResizeObserver === 'function') {
-                            activeResizeObserver = new ResizeObserver(function() {
+                            var resizeObserver = new ResizeObserver(function() {
                                 if (fitMode) {
                                     fitToViewport();
                                 }
                             });
-                            activeResizeObserver.observe(viewport);
+                            resizeObserver.observe(viewport);
                         }
 
                         viewerHeader.appendChild(infoBar);
@@ -2048,7 +2023,9 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         try {
           await vscode.workspace.fs.stat(configUri);
+          // File exists, just open it
         } catch {
+          // File does not exist, create it
           await vscode.workspace.fs.writeFile(
             configUri,
             Buffer.from(JSON.stringify(template, null, 2), 'utf8')
@@ -2064,6 +2041,5 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 }
-
 
 export function deactivate(): void {}

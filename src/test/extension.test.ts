@@ -604,8 +604,7 @@ suite('Extension Test Suite', () => {
     });
 
     // Match depth pattern
-    const depthFile =
-      process.platform === 'win32' ? 'C:\\repo\\frame.depth' : '/repo/frame.depth';
+    const depthFile = process.platform === 'win32' ? 'C:\\repo\\frame.depth' : '/repo/frame.depth';
     assert.deepStrictEqual(parseRawImageConfig(JSON.stringify(config), configPath, depthFile), {
       width: 100,
       height: 100,
@@ -636,23 +635,25 @@ suite('Extension Test Suite', () => {
 
     // File sits directly inside thumbnails/ — no intermediate path segment
     const topLevelThumb =
-      process.platform === 'win32'
-        ? 'C:\\repo\\thumbnails\\icon.bin'
-        : '/repo/thumbnails/icon.bin';
-    assert.deepStrictEqual(
-      parseRawImageConfig(JSON.stringify(config), configPath, topLevelThumb),
-      { width: 32, height: 32, headerSize: 0, format: 'rgb24' }
-    );
+      process.platform === 'win32' ? 'C:\\repo\\thumbnails\\icon.bin' : '/repo/thumbnails/icon.bin';
+    assert.deepStrictEqual(parseRawImageConfig(JSON.stringify(config), configPath, topLevelThumb), {
+      width: 32,
+      height: 32,
+      headerSize: 0,
+      format: 'rgb24',
+    });
 
     // File sits two levels deep — should also match
     const deepThumb =
       process.platform === 'win32'
         ? 'C:\\repo\\a\\b\\thumbnails\\icon.bin'
         : '/repo/a/b/thumbnails/icon.bin';
-    assert.deepStrictEqual(
-      parseRawImageConfig(JSON.stringify(config), configPath, deepThumb),
-      { width: 32, height: 32, headerSize: 0, format: 'rgb24' }
-    );
+    assert.deepStrictEqual(parseRawImageConfig(JSON.stringify(config), configPath, deepThumb), {
+      width: 32,
+      height: 32,
+      headerSize: 0,
+      format: 'rgb24',
+    });
   });
 
   test('rawimagerc.schema.json format enum matches extension supported formats', () => {
