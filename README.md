@@ -5,6 +5,8 @@ A VS Code extension that displays raw binary image files directly in the editor 
 ## Design Documents
 
 - [Basic design](docs/basic-design.md)
+- [Detailed design](docs/detailed-design.md)
+- [Roadmap](docs/roadmap.md)
 
 ## Features
 
