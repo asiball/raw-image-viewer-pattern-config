@@ -50,14 +50,15 @@
 
 ### 3.2 初回描画
 
-- Webview 側が `ready` を送信
-- Extension 側は `ready` 受信後に描画開始
-- `ready` 未受信時のフォールバックタイマー経由でも `render` を送信
+- Webview 側が `ready` を 250 ms 間隔で繰り返し送信（Extension からの acknowledgement を受け取るまで）
+- Extension 側は `ready` 受信後に描画開始し、タイマーをキャンセル
+- 300 ms のフォールバックタイマーにより、`ready` 未受信でも `render` を送信
+- 5 秒間 `ready` を受信しない場合は警告メッセージを表示
 
 ### 3.3 再描画
 
 - 対象ファイルや `.rawimagerc` の更新時に再解決・再描画
-- 連続更新はデバウンスして反映
+- 連続更新は 100 ms デバウンスして反映
 
 ### 3.4 PNG 保存
 
@@ -94,6 +95,15 @@ sequenceDiagram
 | -------- | -------------------------------------- |
 | `render` | 描画対象 URI、設定、ファイルサイズ通知 |
 | `error`  | エラー内容通知                         |
+
+`render` メッセージのフィールド:
+
+| フィールド    | 型                         | 内容                                                                                  |
+| ------------- | -------------------------- | ------------------------------------------------------------------------------------- |
+| `config`      | `RawImageConfig` \| `null` | 解決済み設定。設定が見つからない場合は `null`                                         |
+| `configSource`| `string` \| `null`         | 設定の取得元（`"rawimagerc"` / `"filename"` / `"settings"` / `"filename+settings"`） |
+| `fileUri`     | `string`                   | Webview からアクセス可能な VS Code Webview URI                                        |
+| `fileSize`    | `number`                   | ファイルサイズ（バイト）                                                              |
 
 ## 5. 設定仕様
 
