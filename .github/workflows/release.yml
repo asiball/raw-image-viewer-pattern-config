@@ -1,6 +1,11 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Release tag to create, for example v0.0.3
+        required: true
   push:
     tags:
       - 'v*'
@@ -9,7 +14,7 @@ jobs:
   build:
     uses: ./.github/workflows/build-vsix.yml
     with:
-      release_tag: ${{ github.ref_name }}
+      release_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
     permissions:
       contents: read
 
@@ -27,10 +32,12 @@ jobs:
           path: .
 
       - name: Create Release and Upload VSIX
-        uses: softprops/action-gh-release@v1
-        with:
-          files: rawviewer-*.vsix
-          draft: false
-          generate_release_notes: true
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+        run: |
+          gh release create -R "$GH_REPO" "$RELEASE_TAG" rawviewer-*.vsix \
+            --generate-notes \
+            --target "$GITHUB_SHA"

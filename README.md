@@ -2,6 +2,12 @@
 
 この VS Code 拡張機能は、バイナリ形式の RAW 画像ファイルをエディタ上で直接表示するためのツールです。Canvas ベースのレンダラーを使用し、多彩なピクセルフォーマットに対応しています。
 
+## デザインドキュメント
+
+- [基本設計書](docs/basic-design.md)
+- [詳細設計書](docs/detailed-design.md)
+- [ロードマップ](docs/roadmap.md)
+
 ## 特徴
 
 - バイナリ画像ファイル（`.raw`, `.bin`, `.data`, `.img`, `.gray`, `.yuv`）を画像として表示。
@@ -19,9 +25,8 @@
 
 ```json
 {
-  "width": 640,
-  "height": 480,
-  "headerSize": 0,
+  "width": 1920,
+  "height": 1080,
   "format": "rgb24"
 }
 ```
@@ -63,44 +68,33 @@
 3. その他のファイルは、右クリックから「**Open as Raw Image**」を選択してください。
 4. キャンバス上部の「**Export PNG**」ボタンで、現在の表示を `.png` ファイルとして保存できます。
 
+## GitHub Actions ワークフロー
+
+### VSIX のビルド (アーティファクト)
+
+プッシュやプルリクエストのたびに **Build VSIX** ワークフローが実行され、拡張機能をパッケージ化して `rawviewer-vsix` アーティファクトをアップロードします。これによって Marketplace に公開されることはありません。
+
+1. ブランチを GitHub にプッシュするか、**Actions** タブから手動でワークフローを起動します。
+2. ワークフローの実行結果から `rawviewer-vsix` アーティファクトをダウンロードします。
+3. VS Code で **Extensions: Install from VSIX...** を選択してインストールします。
+
+### GitHub リリース (自動化)
+
+**Release** ワークフローは、GitHub Actions UI または GitHub Mobile から開始できます。`v0.1.0` のようなタグを入力すると、ワークフローが `.vsix` をビルドし、GitHub リリースを作成してファイルをアセットとして添付します。
+
+また、`main` ブランチに `v*` タグをプッシュした際にも自動的に実行されます。
+
+[Releases](../../releases) ページからリリースをダウンロードし、**Extensions: Install from VSIX...** でインストールしてください。
+
 ## デフォルト設定（フォールバック）
 
 `.rawimagerc` が存在しない場合に備え、以下の設定をワークスペース設定（`settings.json`）に追加できます。
 
 ```json
 {
-  "rawviewer.defaultWidth": 1920,
-  "rawviewer.defaultHeight": 1080,
-  "rawviewer.defaultHeaderSize": 0,
+  "rawviewer.defaultWidth": 1280,
+  "rawviewer.defaultHeight": 720,
   "rawviewer.defaultFormat": "rgb24",
   "rawviewer.inferFromFilename": true
 }
-```
-
-`rawviewer.inferFromFilename` が `true` の場合、`capture_1280x720_gray8.raw` のようなファイル名から自動的に幅、高さ、フォーマットを推論します。
-
-## 開発者向け
-
-### セットアップ
-
-リポジトリをクローンした後、以下のコマンドを実行して依存関係をインストールし、初回ビルドを行ってください。
-
-```bash
-npm install
-npm run compile
-```
-
-### デバッグ実行
-
-VS Code でこのプロジェクトを開き、`F5` キーを押すと、別の VS Code ウィンドウ（拡張機能開発ホスト）が立ち上がります。
-
-- デバッグ開始時に `test-data/generate_images.py` が自動的に走り、テスト用のバイナリ画像が生成されます。
-- `test-data/` フォルダが自動的に開かれるので、生成された `.raw` ファイルなどを開いて動作を確認できます。
-
-### 手動での画像生成
-
-手動でテスト画像を生成する場合は、以下のコマンドを実行してください。
-
-```bash
-python3 test-data/generate_images.py
 ```

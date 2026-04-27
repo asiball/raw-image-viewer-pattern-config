@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- Manual GitHub Actions release dispatch so GitHub Mobile can publish releases without pushing tags
+- Release workflow support for both manual dispatch and `v*` tag pushes
+
 ## [0.0.3] - 2026-04-15
 
 ### Added

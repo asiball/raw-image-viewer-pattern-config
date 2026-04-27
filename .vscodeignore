@@ -13,3 +13,4 @@ rawviewer-*.vsix
 **/*.map
 **/*.ts
 **/.vscode-test.*
+images/*.svg
