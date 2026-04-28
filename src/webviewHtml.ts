@@ -62,9 +62,11 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            background: #1e1e1e;
-            color: #cccccc;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+            font-family: var(--vscode-font-family);
+            font-weight: var(--vscode-font-weight);
+            font-size: var(--vscode-font-size);
             padding: 16px;
             min-height: 100vh;
         }
@@ -87,36 +89,43 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             flex-wrap: wrap;
             gap: 12px;
             align-items: center;
-            justify-content: center;
+            width: 100%;
+        }
+        .spacer {
+            flex: 1;
+        }
+        .button-group {
+            display: flex;
+            gap: 4px;
         }
         .info-bar {
-            color: #9cdcfe;
+            color: var(--vscode-textPreformat-foreground);
             font-size: 13px;
-            font-family: 'Consolas', 'Courier New', monospace;
+            font-family: var(--vscode-editor-font-family);
         }
         .pixel-info-bar {
-            color: #9cdcfe;
+            color: var(--vscode-textPreformat-foreground);
             font-size: 13px;
-            font-family: 'Consolas', 'Courier New', monospace;
+            font-family: var(--vscode-editor-font-family);
             min-height: 1.2em;
         }
         .action-button {
             appearance: none;
-            border: 1px solid #1177bb;
-            border-radius: 4px;
-            background: #0e639c;
-            color: #ffffff;
+            border: 1px solid transparent;
+            border-radius: 2px;
+            background: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
             cursor: pointer;
             font-size: 13px;
             line-height: 1.2;
             padding: 6px 12px;
         }
         .action-button:hover {
-            background: #1177bb;
+            background: var(--vscode-button-hoverBackground);
         }
         .action-button.active {
-            background: #1177bb;
-            border-color: #9cdcfe;
+            background: var(--vscode-button-hoverBackground);
+            border-color: var(--vscode-focusBorder);
         }
         .error-box {
             background: #5a1d1d;
@@ -135,14 +144,14 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
         .no-config-box h3 { margin-bottom: 12px; color: #e2c08d; }
         .no-config-box p { margin-bottom: 10px; line-height: 1.5; }
         code {
-            background: #1e1e1e;
+            background: var(--vscode-editor-background);
             padding: 1px 5px;
             border-radius: 3px;
-            font-family: 'Consolas', monospace;
+            font-family: var(--vscode-editor-font-family);
             font-size: 0.9em;
         }
         pre {
-            background: #1e1e1e;
+            background: var(--vscode-editor-background);
             padding: 12px 16px;
             border-radius: 4px;
             overflow-x: auto;
@@ -151,11 +160,11 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             margin-bottom: 10px;
         }
         table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
-        th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid #444; }
-        th { color: #9cdcfe; }
+        th, td { text-align: left; padding: 4px 10px; border-bottom: 1px solid var(--vscode-panel-border); }
+        th { color: var(--vscode-textPreformat-foreground); }
         canvas {
             image-rendering: pixelated;
-            border: 1px solid #444;
+            border: 1px solid var(--vscode-panel-border);
             box-shadow: 0 0 20px rgba(0,0,0,0.5);
             display: block;
         }
@@ -166,8 +175,15 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             align-self: stretch;
             height: calc(100vh - 120px);
             min-height: 200px;
-            background: #111;
-            border: 1px solid #333;
+            background-color: var(--vscode-editor-background);
+            background-image:
+                linear-gradient(45deg, rgba(128,128,128,0.1) 25%, transparent 25%),
+                linear-gradient(-45deg, rgba(128,128,128,0.1) 25%, transparent 25%),
+                linear-gradient(45deg, transparent 75%, rgba(128,128,128,0.1) 75%),
+                linear-gradient(-45deg, transparent 75%, rgba(128,128,128,0.1) 75%);
+            background-size: 20px 20px;
+            background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+            border: 1px solid var(--vscode-panel-border);
             border-radius: 4px;
         }
         .canvas-viewport.panning {
@@ -178,9 +194,9 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             bottom: 8px;
             right: 8px;
             background: rgba(0, 0, 0, 0.6);
-            color: #9cdcfe;
+            color: var(--vscode-textPreformat-foreground);
             font-size: 11px;
-            font-family: 'Consolas', 'Courier New', monospace;
+            font-family: var(--vscode-editor-font-family);
             padding: 2px 6px;
             border-radius: 3px;
             pointer-events: none;
@@ -191,9 +207,9 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             bottom: 8px;
             left: 8px;
             background: rgba(0, 0, 0, 0.5);
-            color: #888;
+            color: var(--vscode-descriptionForeground);
             font-size: 10px;
-            font-family: 'Consolas', 'Courier New', monospace;
+            font-family: var(--vscode-editor-font-family);
             padding: 2px 6px;
             border-radius: 3px;
             pointer-events: none;
@@ -684,10 +700,18 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             activeResizeObserver.observe(viewport);
                         }
 
+                        var spacer = document.createElement('div');
+                        spacer.className = 'spacer';
+
+                        var buttonGroup = document.createElement('div');
+                        buttonGroup.className = 'button-group';
+                        buttonGroup.appendChild(fitButton);
+                        buttonGroup.appendChild(zoom1to1Button);
+
                         viewerHeader.appendChild(infoBar);
+                        viewerHeader.appendChild(spacer);
                         viewerHeader.appendChild(exportButton);
-                        viewerHeader.appendChild(fitButton);
-                        viewerHeader.appendChild(zoom1to1Button);
+                        viewerHeader.appendChild(buttonGroup);
                         root.appendChild(viewerHeader);
 
                         viewport.appendChild(canvas);
