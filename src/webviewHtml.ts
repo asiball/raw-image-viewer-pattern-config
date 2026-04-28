@@ -131,6 +131,17 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             outline: 1px solid var(--vscode-focusBorder);
             outline-offset: -1px;
         }
+        .format-select {
+            background: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            border: 1px solid var(--vscode-dropdown-border);
+            padding: 4px 8px;
+            font-size: 13px;
+            cursor: pointer;
+            border-radius: 2px;
+            outline: none;
+            font-family: inherit;
+        }
         .error-box {
             background: #5a1d1d;
             border: 1px solid #f48771;
@@ -304,6 +315,11 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
         var activeAbortController = null; // fetch のキャンセル用
         var activeRenderId = 0;        // 最新のレンダリング ID（古いレンダリングを無視するため）
         var activeResizeObserver = null; // ResizeObserver の参照（再レンダリング時に解放するため）
+        var lastConfig = null;
+        var lastConfigSource = null;
+        var lastFileUri = null;
+        var lastFileSize = null;
+        var currentFormatOverride = null;
 
         // --- ユーティリティ ---
 
@@ -351,13 +367,23 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
 
             if (msg.type === 'render') {
                 clearReadyTimer();
-                var config = msg.config;
-                var configSource = msg.configSource;
-                var fileUri = msg.fileUri;
-                var fileSize = msg.fileSize;
+                lastConfig = msg.config;
+                lastConfigSource = msg.configSource;
+                lastFileUri = msg.fileUri;
+                lastFileSize = msg.fileSize;
+                currentFormatOverride = null;
+                renderImage();
+            }
+        });
 
-                // 設定が見つからない場合はヘルプ画面を表示する
-                if (!config) {
+        function renderImage() {
+            var root = document.getElementById('root');
+            var config = lastConfig;
+            var configSource = lastConfigSource;
+            var fileUri = lastFileUri;
+            var fileSize = lastFileSize;
+
+            if (!config) {
                     root.className = 'center';
                     root.innerHTML =
                         '<div class="no-config-box">' +
@@ -388,7 +414,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                 var width = config.width;
                 var height = config.height;
                 var headerSize = config.headerSize || 0;
-                var format = config.format || 'rgb24';
+                var format = currentFormatOverride || config.format || 'rgb24';
 
                 if (!fileUri) {
                     root.className = 'center';
@@ -571,6 +597,23 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             vscode.postMessage({ type: 'savePng', dataUrl: canvas.toDataURL('image/png') });
                         });
 
+                        var formatSelect = document.createElement('select');
+                        formatSelect.className = 'format-select';
+                        var supportedFormats = ['gray8', 'gray16le', 'gray16be', 'rgb24', 'bgr24', 'rgba32', 'bgra32', 'yuv420p', 'nv12', 'yuyv422', 'float32', 'depth16'];
+                        supportedFormats.forEach(function(fmt) {
+                            var option = document.createElement('option');
+                            option.value = fmt;
+                            option.textContent = fmt;
+                            if (fmt === format) {
+                                option.selected = true;
+                            }
+                            formatSelect.appendChild(option);
+                        });
+                        formatSelect.addEventListener('change', function() {
+                            currentFormatOverride = formatSelect.value;
+                            renderImage();
+                        });
+
                         var fitButton = document.createElement('button');
                         fitButton.type = 'button';
                         fitButton.className = 'action-button active';
@@ -720,6 +763,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
 
                         var buttonGroup = document.createElement('div');
                         buttonGroup.className = 'button-group';
+                        buttonGroup.appendChild(formatSelect);
                         buttonGroup.appendChild(fitButton);
                         buttonGroup.appendChild(zoom1to1Button);
 
@@ -871,7 +915,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                         root.className = 'center';
                         root.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + escapeHtml(String(err)) + '</div>';
                     });
-            }
+        }
         });
 
         // --- エラーハンドラ ---
