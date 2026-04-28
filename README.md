@@ -25,9 +25,13 @@
 
 ```json
 {
-  "width": 1920,
-  "height": 1080,
-  "format": "rgb24"
+  "patterns": {
+    "*": {
+      "width": 1920,
+      "height": 1080,
+      "format": "rgb24"
+    }
+  }
 }
 ```
 

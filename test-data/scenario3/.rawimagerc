@@ -1,6 +1,10 @@
 {
-  "width": 64,
-  "height": 64,
-  "headerSize": 128,
-  "format": "rgb24"
+  "patterns": {
+    "*": {
+      "width": 64,
+      "height": 64,
+      "headerSize": 128,
+      "format": "rgb24"
+    }
+  }
 }
