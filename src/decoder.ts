@@ -464,6 +464,8 @@ export function decodeRawImageToRgba(
       return pixels;
 
     case 'gray16le':
+    case 'depth16':
+      // gray16le と同じ構造（リトルエンディアン16ビット）
       for (
         let p = 0, srcIdx = 0;
         p < totalPixels && srcIdx + 1 < pixelData.length;
@@ -603,18 +605,6 @@ export function decodeRawImageToRgba(
         const v = pixelData[srcIdx + 3];
         writeYuvPixel(p, y0, u, v);
         writeYuvPixel(p + 1, y1, u, v);
-      }
-      return pixels;
-
-    case 'depth16':
-      // gray16le と同じ構造（リトルエンディアン16ビット）
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 1 < pixelData.length;
-        p++, srcIdx += 2
-      ) {
-        const value = ((pixelData[srcIdx + 1] << 8) | pixelData[srcIdx]) >> 8;
-        writePixel(p, value, value, value);
       }
       return pixels;
 
