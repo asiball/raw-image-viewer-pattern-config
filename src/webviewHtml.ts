@@ -336,7 +336,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                         '<h3>⚙ No .rawimagerc configuration found</h3>' +
                         '<p>Create a <code>.rawimagerc</code> file in the same directory as the file, or any parent directory, to configure how to render this binary file as an image.</p>' +
                         '<p>Alternatively, set workspace defaults such as <code>rawviewer.defaultWidth</code> and <code>rawviewer.defaultHeight</code>, or include metadata in the filename like <code>frame_1920x1080_rgb24.raw</code>.</p>' +
-                        '<pre>{\\n  "width": 640,\\n  "height": 480,\\n  "headerSize": 0,\\n  "format": "rgb24"\\n}</pre>' +
+                        '<pre>{\\n  "patterns": {\\n    "*": {\\n      "width": 640,\\n      "height": 480,\\n      "headerSize": 0,\\n      "format": "rgb24"\\n    }\\n  }\\n}</pre>' +
                         '<p>Supported formats:</p>' +
                         '<table>' +
                         '<tr><th>Format</th><th>Description</th><th>Bytes/pixel</th></tr>' +
