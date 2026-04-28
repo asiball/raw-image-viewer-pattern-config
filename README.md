@@ -1,4 +1,4 @@
-# Raw Image Viewer
+# Raw Image Viewer: Pattern-based configuration
 
 この VS Code 拡張機能は、バイナリ形式の RAW 画像ファイルをエディタ上で直接表示するためのツールです。Canvas ベースのレンダラーを使用し、多彩なピクセルフォーマットに対応しています。
 

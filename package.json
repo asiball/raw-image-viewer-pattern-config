@@ -1,6 +1,6 @@
 {
-  "name": "rawviewer",
-  "displayName": "Raw Image Viewer",
+  "name": "raw-image-viewer-pattern-config",
+  "displayName": "Raw Image Viewer: Pattern-based configuration",
   "description": "View raw binary image files in VS Code using a .rawimagerc configuration file",
   "version": "0.1.0",
   "icon": "images/icon.png",
@@ -21,7 +21,7 @@
     "customEditors": [
       {
         "viewType": "rawviewer.rawImageEditor",
-        "displayName": "Raw Image Viewer",
+        "displayName": "Raw Image Viewer: Pattern-based configuration",
         "selector": [
           {
             "filenamePattern": "*.raw"
