@@ -127,6 +127,10 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             background: var(--vscode-button-hoverBackground);
             border-color: var(--vscode-focusBorder);
         }
+        .action-button:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
+        }
         .error-box {
             background: #5a1d1d;
             border: 1px solid #f48771;
@@ -238,6 +242,10 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             accent-color: #0e639c;
             cursor: pointer;
         }
+        .window-controls input[type=range]:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: 2px;
+        }
         .window-reset {
             appearance: none;
             background: none;
@@ -249,6 +257,10 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             padding: 3px 8px;
         }
         .window-reset:hover { border-color: #9cdcfe; }
+        .window-reset:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
+        }
         .spinner {
             width: 40px; height: 40px;
             border: 3px solid #333;
@@ -553,6 +565,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                         exportButton.type = 'button';
                         exportButton.className = 'action-button';
                         exportButton.textContent = 'Export PNG';
+                        exportButton.title = 'Export current view as a PNG image';
                         exportButton.addEventListener('click', function() {
                             // Canvas の内容を PNG として Extension に送信する
                             vscode.postMessage({ type: 'savePng', dataUrl: canvas.toDataURL('image/png') });
@@ -562,11 +575,13 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                         fitButton.type = 'button';
                         fitButton.className = 'action-button active';
                         fitButton.textContent = 'Fit';
+                        fitButton.title = 'Fit image to window';
 
                         var zoom1to1Button = document.createElement('button');
                         zoom1to1Button.type = 'button';
                         zoom1to1Button.className = 'action-button';
                         zoom1to1Button.textContent = '1:1';
+                        zoom1to1Button.title = 'View image at 100% original size';
 
                         // ズーム・パン用のビューポート
                         var viewport = document.createElement('div');
@@ -789,6 +804,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             resetBtn.type = 'button';
                             resetBtn.className = 'window-reset';
                             resetBtn.textContent = 'Reset';
+                            resetBtn.title = 'Reset window/level controls to defaults';
 
                             var initialMin = grayWindowMin;
                             var initialMax = grayWindowMax;
