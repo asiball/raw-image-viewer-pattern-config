@@ -28,7 +28,7 @@ import {
   decodeRawPixel,
   getBytesPerPixel,
 } from './decoder';
-import { grayscaleStreamFormats, streamDecodableFormats } from './types';
+import { grayscaleStreamFormats, streamDecodableFormats, supportedFormats } from './types';
 
 /**
  * セキュリティのための nonce（ワンタイムトークン）を生成します。
@@ -284,6 +284,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
         const decodeRawImageToRgba = ${decodeRawImageToRgba.toString()};
         const streamDecodableFormats = new Set(${JSON.stringify(streamDecodableFormats)});
         const grayscaleStreamFormats = new Set(${JSON.stringify(grayscaleStreamFormats)});
+        const supportedFormats = ${JSON.stringify(supportedFormats)};
 
         // 以下の関数は decodeRawImageToRgba 内や他の関数から参照されるため
         // グローバルスコープに展開する
@@ -586,7 +587,6 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
 
                         var formatSelect = document.createElement('select');
                         formatSelect.className = 'format-select';
-                        var supportedFormats = ['gray8', 'gray16le', 'gray16be', 'rgb24', 'bgr24', 'rgba32', 'bgra32', 'yuv420p', 'nv12', 'yuyv422', 'float32', 'depth16'];
                         supportedFormats.forEach(function(fmt) {
                             var option = document.createElement('option');
                             option.value = fmt;
@@ -900,7 +900,6 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                         root.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + escapeHtml(String(err)) + '</div>';
                     });
         }
-        });
 
         // --- エラーハンドラ ---
 
