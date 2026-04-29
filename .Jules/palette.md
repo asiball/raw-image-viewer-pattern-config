@@ -1,0 +1,3 @@
+## 2026-04-29 - Improve Webview Select Element Accessibility and Error Announcements
+**Learning:** In VS Code webview extensions, custom UI elements like `<select>` generated dynamically don't inherently receive keyboard focus styling that matches standard VS Code conventions unless explicitly styled using `--vscode-focusBorder`. Additionally, dynamically injected error messages via `innerHTML` are often completely missed by screen readers.
+**Action:** Always add `:focus-visible` styling using `var(--vscode-focusBorder)` to interactive elements, add clear `aria-label`s to custom inputs, and use `role="alert"` on dynamically injected error containers so they are read aloud immediately.

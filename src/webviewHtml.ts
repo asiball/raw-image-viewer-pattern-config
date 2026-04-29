@@ -142,6 +142,10 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             outline: none;
             font-family: inherit;
         }
+        .format-select:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: -1px;
+        }
         .error-box {
             background: #5a1d1d;
             border: 1px solid #f48771;
@@ -350,7 +354,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                 return;
             }
             root.className = 'center';
-            root.innerHTML = '<div class="error-box"><strong>Webview Error:</strong> ' + escapeHtml(String(err)) + '</div>';
+            root.innerHTML = '<div class="error-box" role="alert"><strong>Webview Error:</strong> ' + escapeHtml(String(err)) + '</div>';
         }
 
         // --- メッセージハンドラ（Extension からのメッセージを受け取る）---
@@ -362,7 +366,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             if (msg.type === 'error') {
                 clearReadyTimer();
                 root.className = 'center';
-                root.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + escapeHtml(msg.message) + '</div>';
+                root.innerHTML = '<div class="error-box" role="alert"><strong>Error:</strong> ' + escapeHtml(msg.message) + '</div>';
                 return;
             }
 
@@ -419,7 +423,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
 
                 if (!fileUri) {
                     root.className = 'center';
-                    root.innerHTML = '<div class="error-box"><strong>Error:</strong> Missing file URI for webview fetch.</div>';
+                    root.innerHTML = '<div class="error-box" role="alert"><strong>Error:</strong> Missing file URI for webview fetch.</div>';
                     return;
                 }
 
@@ -601,6 +605,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                         var formatSelect = document.createElement('select');
                         formatSelect.className = 'format-select';
                         formatSelect.title = 'Override pixel format for this view';
+                        formatSelect.setAttribute('aria-label', 'Pixel format');
                         supportedFormats.forEach(function(fmt) {
                             var option = document.createElement('option');
                             option.value = fmt;
@@ -914,7 +919,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             return;
                         }
                         root.className = 'center';
-                        root.innerHTML = '<div class="error-box"><strong>Error:</strong> ' + escapeHtml(String(err)) + '</div>';
+                        root.innerHTML = '<div class="error-box" role="alert"><strong>Error:</strong> ' + escapeHtml(String(err)) + '</div>';
                     });
         }
 
@@ -946,7 +951,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                 return;
             }
             root.className = 'center';
-            root.innerHTML = '<div class="error-box"><strong>Error:</strong> Extension host did not respond in time. Reload the extension host and reopen the file.</div>';
+            root.innerHTML = '<div class="error-box" role="alert"><strong>Error:</strong> Extension host did not respond in time. Reload the extension host and reopen the file.</div>';
         }, 4000);
     </script>
 </body>
