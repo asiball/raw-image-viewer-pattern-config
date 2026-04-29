@@ -600,6 +600,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
 
                         var formatSelect = document.createElement('select');
                         formatSelect.className = 'format-select';
+                        formatSelect.title = 'Override pixel format for this view';
                         supportedFormats.forEach(function(fmt) {
                             var option = document.createElement('option');
                             option.value = fmt;
