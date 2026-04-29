@@ -131,7 +131,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             outline: 1px solid var(--vscode-focusBorder);
             outline-offset: -1px;
         }
-        .format-select {
+        .colormap-select {
             background: var(--vscode-dropdown-background);
             color: var(--vscode-dropdown-foreground);
             border: 1px solid var(--vscode-dropdown-border);
@@ -320,9 +320,41 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
         var lastConfigSource = null;
         var lastFileUri = null;
         var lastFileSize = null;
-        var currentFormatOverride = null;
+        var currentColormap = 'Grayscale';
 
         // --- ユーティリティ ---
+
+        // カラーマップLUTを生成する
+        function buildColormapLut(name) {
+            if (name === 'Grayscale') return null;
+            var lut = new Uint8Array(256 * 3);
+            for (var i = 0; i < 256; i++) {
+                var r, g, b;
+                if (name === 'Jet') {
+                    var x = i / 255.0;
+                    r = Math.min(255, Math.max(0, Math.round(255 * (1.5 - Math.abs(4 * x - 3)))));
+                    g = Math.min(255, Math.max(0, Math.round(255 * (1.5 - Math.abs(4 * x - 2)))));
+                    b = Math.min(255, Math.max(0, Math.round(255 * (1.5 - Math.abs(4 * x - 1)))));
+                } else if (name === 'Viridis') {
+                    // Viridis approximation
+                    var x = i / 255.0;
+                    r = Math.round(255 * Math.max(0, Math.min(1, 0.28 + 0.14*x + 0.69*x*x - 0.12*x*x*x)));
+                    g = Math.round(255 * Math.max(0, Math.min(1, 0.01 + 0.42*x - 0.05*x*x + 0.62*x*x*x)));
+                    b = Math.round(255 * Math.max(0, Math.min(1, 0.40 + 0.50*x - 0.97*x*x + 0.05*x*x*x)));
+                } else if (name === 'Hot') {
+                    var x = i / 255.0;
+                    r = Math.min(255, Math.max(0, Math.round(255 * (3 * x))));
+                    g = Math.min(255, Math.max(0, Math.round(255 * (3 * x - 1))));
+                    b = Math.min(255, Math.max(0, Math.round(255 * (3 * x - 2))));
+                } else { // Grayscale
+                    r = i; g = i; b = i;
+                }
+                lut[i * 3] = r;
+                lut[i * 3 + 1] = g;
+                lut[i * 3 + 2] = b;
+            }
+            return lut;
+        }
 
         function clearReadyTimer() {
             if (readyTimer) {
@@ -372,7 +404,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                 lastConfigSource = msg.configSource;
                 lastFileUri = msg.fileUri;
                 lastFileSize = msg.fileSize;
-                currentFormatOverride = null;
+                currentColormap = 'Grayscale';
                 renderImage();
             }
         });
@@ -415,7 +447,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                 var width = config.width;
                 var height = config.height;
                 var headerSize = config.headerSize || 0;
-                var format = currentFormatOverride || config.format || 'rgb24';
+                var format = config.format || 'rgb24';
 
                 if (!fileUri) {
                     root.className = 'center';
@@ -497,7 +529,8 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             if (autoMin >= autoMax) { autoMin = 0; autoMax = grayMaxValue; }
                             grayWindowMin = autoMin;
                             grayWindowMax = autoMax;
-                            applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
+                            var lut = buildColormapLut(currentColormap);
+                            applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels, lut);
                         } else if (isFloat32) {
                             // float32: ストリーミングで rawGrayF32 に書き込み後、ウィンドウ適用
                             var f32State = createFloat32DecodeState(width, height, headerSize);
@@ -530,7 +563,8 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             grayMaxValue = f32AutoMax;
                             grayWindowMin = f32AutoMin;
                             grayWindowMax = f32AutoMax;
-                            applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
+                            var lut = buildColormapLut(currentColormap);
+                            applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels, lut);
                         } else if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
                             // RGB/BGR 系: ストリーミングで直接 pixels に書き込む
                             var reader = response.body.getReader();
@@ -598,22 +632,27 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             vscode.postMessage({ type: 'savePng', dataUrl: canvas.toDataURL('image/png') });
                         });
 
-                        var formatSelect = document.createElement('select');
-                        formatSelect.className = 'format-select';
-                        formatSelect.title = 'Override pixel format for this view';
-                        supportedFormats.forEach(function(fmt) {
-                            var option = document.createElement('option');
-                            option.value = fmt;
-                            option.textContent = fmt;
-                            if (fmt === format) {
-                                option.selected = true;
-                            }
-                            formatSelect.appendChild(option);
-                        });
-                        formatSelect.addEventListener('change', function() {
-                            currentFormatOverride = formatSelect.value;
-                            renderImage();
-                        });
+                        var colormapSelect = null;
+                        var isGrayscale = grayscaleStreamFormats.has(format) || format === 'float32';
+                        if (isGrayscale) {
+                            colormapSelect = document.createElement('select');
+                            colormapSelect.className = 'colormap-select';
+                            colormapSelect.title = 'Select colormap for grayscale image';
+                            var colormaps = ['Grayscale', 'Jet', 'Viridis', 'Hot'];
+                            colormaps.forEach(function(cmap) {
+                                var option = document.createElement('option');
+                                option.value = cmap;
+                                option.textContent = cmap;
+                                if (cmap === currentColormap) {
+                                    option.selected = true;
+                                }
+                                colormapSelect.appendChild(option);
+                            });
+                            colormapSelect.addEventListener('change', function() {
+                                currentColormap = colormapSelect.value;
+                                renderImage();
+                            });
+                        }
 
                         var fitButton = document.createElement('button');
                         fitButton.type = 'button';
@@ -764,7 +803,9 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
 
                         var buttonGroup = document.createElement('div');
                         buttonGroup.className = 'button-group';
-                        buttonGroup.appendChild(formatSelect);
+                        if (colormapSelect) {
+                            buttonGroup.appendChild(colormapSelect);
+                        }
                         buttonGroup.appendChild(fitButton);
                         buttonGroup.appendChild(zoom1to1Button);
 
@@ -876,7 +917,8 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                                         var wMax = readSliderVal(maxSlider);
                                         minValSpan.textContent = fmtSliderVal(wMin);
                                         maxValSpan.textContent = fmtSliderVal(wMax);
-                                        applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data);
+                                        var lut = buildColormapLut(currentColormap);
+                                        applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data, lut);
                                         capturedCtx.putImageData(capturedImageData, 0, 0);
                                     });
                                 }

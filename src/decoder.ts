@@ -291,7 +291,8 @@ export function applyWindowLevel(
   totalPixels: number,
   windowMin: number,
   windowMax: number,
-  pixels: Uint8ClampedArray
+  pixels: Uint8ClampedArray,
+  lut?: Uint8Array
 ): void {
   const range = windowMax - windowMin;
   for (let p = 0; p < totalPixels; p++) {
@@ -308,10 +309,18 @@ export function applyWindowLevel(
       }
     }
     const idx = p * 4;
-    pixels[idx] = mapped;
-    pixels[idx + 1] = mapped;
-    pixels[idx + 2] = mapped;
-    pixels[idx + 3] = 255;
+    if (lut) {
+      const lutIdx = mapped * 3;
+      pixels[idx] = lut[lutIdx];
+      pixels[idx + 1] = lut[lutIdx + 1];
+      pixels[idx + 2] = lut[lutIdx + 2];
+      pixels[idx + 3] = 255;
+    } else {
+      pixels[idx] = mapped;
+      pixels[idx + 1] = mapped;
+      pixels[idx + 2] = mapped;
+      pixels[idx + 3] = 255;
+    }
   }
 }
 
