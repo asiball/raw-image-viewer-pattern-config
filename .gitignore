@@ -11,6 +11,9 @@ node_modules
 .DS_Store
 Thumbs.db
 
+# Jules bot internal files
+.Jules/
+
 # Test Data Binaries
 test-data/**/*.raw
 test-data/**/*.gray
