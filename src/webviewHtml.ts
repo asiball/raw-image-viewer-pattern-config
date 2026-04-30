@@ -355,6 +355,17 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
         var lastFileUri = null;
         var lastFileSize = null;
         var currentColormap = 'Grayscale';
+        var currentColormapLut = null; // buildColormapLut() の結果をキャッシュ（Grayscale は null）
+
+        function applyColormapToData(data, npx) {
+            if (!currentColormapLut) { return; }
+            for (var wi = 0; wi < npx; wi++) {
+                var wg = data[wi * 4];
+                data[wi * 4]     = currentColormapLut[wg * 3];
+                data[wi * 4 + 1] = currentColormapLut[wg * 3 + 1];
+                data[wi * 4 + 2] = currentColormapLut[wg * 3 + 2];
+            }
+        }
 
         // --- ユーティリティ ---
 
@@ -407,11 +418,8 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                 lastFileUri = msg.fileUri;
                 lastFileSize = msg.fileSize;
                 currentColormap = 'Grayscale';
+                currentColormapLut = null;
                 renderImage();
-            }
-        });
-
-        function renderImage() {
             var root = document.getElementById('root');
             var config = lastConfig;
             var configSource = lastConfigSource;
@@ -532,15 +540,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             grayWindowMin = autoMin;
                             grayWindowMax = autoMax;
                             applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
-                            if (currentColormap !== 'Grayscale') {
-                                var initGrayLut = buildColormapLut(currentColormap);
-                                for (var ci = 0; ci < width * height; ci++) {
-                                    var cg = pixels[ci * 4];
-                                    pixels[ci * 4]     = initGrayLut[cg * 3];
-                                    pixels[ci * 4 + 1] = initGrayLut[cg * 3 + 1];
-                                    pixels[ci * 4 + 2] = initGrayLut[cg * 3 + 2];
-                                }
-                            }
+                            applyColormapToData(pixels, width * height);
                         } else if (isFloat32) {
                             // float32: ストリーミングで rawGrayF32 に書き込み後、ウィンドウ適用
                             var f32State = createFloat32DecodeState(width, height, headerSize);
@@ -574,15 +574,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             grayWindowMin = f32AutoMin;
                             grayWindowMax = f32AutoMax;
                             applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
-                            if (currentColormap !== 'Grayscale') {
-                                var initF32Lut = buildColormapLut(currentColormap);
-                                for (var fi = 0; fi < width * height; fi++) {
-                                    var fg = pixels[fi * 4];
-                                    pixels[fi * 4]     = initF32Lut[fg * 3];
-                                    pixels[fi * 4 + 1] = initF32Lut[fg * 3 + 1];
-                                    pixels[fi * 4 + 2] = initF32Lut[fg * 3 + 2];
-                                }
-                            }
+                            applyColormapToData(pixels, width * height);
                         } else if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
                             // RGB/BGR 系: ストリーミングで直接 pixels に書き込む
                             var reader = response.body.getReader();
@@ -900,16 +892,6 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                                 return capturedIsFloat ? val.toFixed(3) : String(val);
                             }
 
-                            function applyColormapToData(data, npx) {
-                                if (currentColormap === 'Grayscale') { return; }
-                                var wlLut = buildColormapLut(currentColormap);
-                                for (var wi = 0; wi < npx; wi++) {
-                                    var wg = data[wi * 4];
-                                    data[wi * 4]     = wlLut[wg * 3];
-                                    data[wi * 4 + 1] = wlLut[wg * 3 + 1];
-                                    data[wi * 4 + 2] = wlLut[wg * 3 + 2];
-                                }
-                            }
 
                             // requestAnimationFrame でまとめて再描画する（スライダー操作を滑らかにする）
                             function scheduleWindowRender() {
@@ -958,6 +940,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             });
                             colormapSelect.addEventListener('change', function() {
                                 currentColormap = colormapSelect.value;
+                                currentColormapLut = currentColormap !== 'Grayscale' ? buildColormapLut(currentColormap) : null;
                                 requestAnimationFrame(function() {
                                     applyWindowLevel(capturedRawGray, totalPx, readSliderVal(minSlider), readSliderVal(maxSlider), capturedImageData.data);
                                     applyColormapToData(capturedImageData.data, totalPx);
