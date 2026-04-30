@@ -131,7 +131,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
             outline: 1px solid var(--vscode-focusBorder);
             outline-offset: -1px;
         }
-        .format-select {
+        .colormap-select {
             background: var(--vscode-dropdown-background);
             color: var(--vscode-dropdown-foreground);
             border: 1px solid var(--vscode-dropdown-border);
@@ -310,6 +310,40 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
         ${createFloat32DecodeState.toString()}
         ${appendFloat32Chunk.toString()}
 
+        function buildColormapLut(name) {
+            var lut = new Uint8Array(256 * 3);
+            var i, r, g, b;
+            if (name === 'Viridis') {
+                var vp = [[0,68,1,84],[64,59,82,139],[128,33,145,140],[192,94,201,98],[255,253,231,37]];
+                for (i = 0; i < 256; i++) {
+                    var s = 0;
+                    while (s < vp.length - 2 && i >= vp[s + 1][0]) { s++; }
+                    var t = (i - vp[s][0]) / (vp[s + 1][0] - vp[s][0]);
+                    r = Math.round(vp[s][1] + t * (vp[s + 1][1] - vp[s][1]));
+                    g = Math.round(vp[s][2] + t * (vp[s + 1][2] - vp[s][2]));
+                    b = Math.round(vp[s][3] + t * (vp[s + 1][3] - vp[s][3]));
+                    lut[i * 3] = r; lut[i * 3 + 1] = g; lut[i * 3 + 2] = b;
+                }
+            } else {
+                for (i = 0; i < 256; i++) {
+                    if (name === 'Jet') {
+                        if (i < 64)       { r = 0;   g = i * 4;           b = 255; }
+                        else if (i < 128) { r = 0;   g = 255;             b = 255 - (i - 64) * 4; }
+                        else if (i < 192) { r = (i - 128) * 4; g = 255;   b = 0; }
+                        else              { r = 255; g = 255 - (i - 192) * 4; b = 0; }
+                    } else if (name === 'Hot') {
+                        if (i < 85)       { r = Math.round(i * 3);        g = 0;   b = 0; }
+                        else if (i < 170) { r = 255; g = Math.round((i - 85) * 3);  b = 0; }
+                        else              { r = 255; g = 255; b = Math.round((i - 170) * 3); }
+                    } else {
+                        r = i; g = i; b = i;
+                    }
+                    lut[i * 3] = r; lut[i * 3 + 1] = g; lut[i * 3 + 2] = b;
+                }
+            }
+            return lut;
+        }
+
         // --- 状態変数 ---
         var readyTimer = null;         // Extension への ready 送信インターバル
         var startupTimeout = null;     // タイムアウト表示用タイマー
@@ -320,7 +354,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
         var lastConfigSource = null;
         var lastFileUri = null;
         var lastFileSize = null;
-        var currentFormatOverride = null;
+        var currentColormap = 'Grayscale';
 
         // --- ユーティリティ ---
 
@@ -372,7 +406,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                 lastConfigSource = msg.configSource;
                 lastFileUri = msg.fileUri;
                 lastFileSize = msg.fileSize;
-                currentFormatOverride = null;
+                currentColormap = 'Grayscale';
                 renderImage();
             }
         });
@@ -415,7 +449,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                 var width = config.width;
                 var height = config.height;
                 var headerSize = config.headerSize || 0;
-                var format = currentFormatOverride || config.format || 'rgb24';
+                var format = config.format || 'rgb24';
 
                 if (!fileUri) {
                     root.className = 'center';
@@ -498,6 +532,15 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             grayWindowMin = autoMin;
                             grayWindowMax = autoMax;
                             applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
+                            if (currentColormap !== 'Grayscale') {
+                                var initGrayLut = buildColormapLut(currentColormap);
+                                for (var ci = 0; ci < width * height; ci++) {
+                                    var cg = pixels[ci * 4];
+                                    pixels[ci * 4]     = initGrayLut[cg * 3];
+                                    pixels[ci * 4 + 1] = initGrayLut[cg * 3 + 1];
+                                    pixels[ci * 4 + 2] = initGrayLut[cg * 3 + 2];
+                                }
+                            }
                         } else if (isFloat32) {
                             // float32: ストリーミングで rawGrayF32 に書き込み後、ウィンドウ適用
                             var f32State = createFloat32DecodeState(width, height, headerSize);
@@ -531,6 +574,15 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                             grayWindowMin = f32AutoMin;
                             grayWindowMax = f32AutoMax;
                             applyWindowLevel(rawGray, width * height, grayWindowMin, grayWindowMax, pixels);
+                            if (currentColormap !== 'Grayscale') {
+                                var initF32Lut = buildColormapLut(currentColormap);
+                                for (var fi = 0; fi < width * height; fi++) {
+                                    var fg = pixels[fi * 4];
+                                    pixels[fi * 4]     = initF32Lut[fg * 3];
+                                    pixels[fi * 4 + 1] = initF32Lut[fg * 3 + 1];
+                                    pixels[fi * 4 + 2] = initF32Lut[fg * 3 + 2];
+                                }
+                            }
                         } else if (response.body && typeof response.body.getReader === 'function' && shouldStreamDecode) {
                             // RGB/BGR 系: ストリーミングで直接 pixels に書き込む
                             var reader = response.body.getReader();
@@ -596,23 +648,6 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                         exportButton.addEventListener('click', function() {
                             // Canvas の内容を PNG として Extension に送信する
                             vscode.postMessage({ type: 'savePng', dataUrl: canvas.toDataURL('image/png') });
-                        });
-
-                        var formatSelect = document.createElement('select');
-                        formatSelect.className = 'format-select';
-                        formatSelect.title = 'Override pixel format for this view';
-                        supportedFormats.forEach(function(fmt) {
-                            var option = document.createElement('option');
-                            option.value = fmt;
-                            option.textContent = fmt;
-                            if (fmt === format) {
-                                option.selected = true;
-                            }
-                            formatSelect.appendChild(option);
-                        });
-                        formatSelect.addEventListener('change', function() {
-                            currentFormatOverride = formatSelect.value;
-                            renderImage();
                         });
 
                         var fitButton = document.createElement('button');
@@ -764,7 +799,6 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
 
                         var buttonGroup = document.createElement('div');
                         buttonGroup.className = 'button-group';
-                        buttonGroup.appendChild(formatSelect);
                         buttonGroup.appendChild(fitButton);
                         buttonGroup.appendChild(zoom1to1Button);
 
@@ -866,6 +900,17 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                                 return capturedIsFloat ? val.toFixed(3) : String(val);
                             }
 
+                            function applyColormapToData(data, npx) {
+                                if (currentColormap === 'Grayscale') { return; }
+                                var wlLut = buildColormapLut(currentColormap);
+                                for (var wi = 0; wi < npx; wi++) {
+                                    var wg = data[wi * 4];
+                                    data[wi * 4]     = wlLut[wg * 3];
+                                    data[wi * 4 + 1] = wlLut[wg * 3 + 1];
+                                    data[wi * 4 + 2] = wlLut[wg * 3 + 2];
+                                }
+                            }
+
                             // requestAnimationFrame でまとめて再描画する（スライダー操作を滑らかにする）
                             function scheduleWindowRender() {
                                 if (!rafPending) {
@@ -877,6 +922,7 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                                         minValSpan.textContent = fmtSliderVal(wMin);
                                         maxValSpan.textContent = fmtSliderVal(wMax);
                                         applyWindowLevel(capturedRawGray, totalPx, wMin, wMax, capturedImageData.data);
+                                        applyColormapToData(capturedImageData.data, totalPx);
                                         capturedCtx.putImageData(capturedImageData, 0, 0);
                                     });
                                 }
@@ -900,9 +946,29 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                                 scheduleWindowRender();
                             });
 
+                            var colormapSelect = document.createElement('select');
+                            colormapSelect.className = 'colormap-select';
+                            colormapSelect.title = 'Colormap for grayscale display';
+                            ['Grayscale', 'Jet', 'Viridis', 'Hot'].forEach(function(cm) {
+                                var opt = document.createElement('option');
+                                opt.value = cm;
+                                opt.textContent = cm;
+                                if (cm === currentColormap) { opt.selected = true; }
+                                colormapSelect.appendChild(opt);
+                            });
+                            colormapSelect.addEventListener('change', function() {
+                                currentColormap = colormapSelect.value;
+                                requestAnimationFrame(function() {
+                                    applyWindowLevel(capturedRawGray, totalPx, readSliderVal(minSlider), readSliderVal(maxSlider), capturedImageData.data);
+                                    applyColormapToData(capturedImageData.data, totalPx);
+                                    capturedCtx.putImageData(capturedImageData, 0, 0);
+                                });
+                            });
+
                             wlControls.appendChild(minLbl);
                             wlControls.appendChild(maxLbl);
                             wlControls.appendChild(resetBtn);
+                            wlControls.appendChild(colormapSelect);
                             root.appendChild(wlControls);
                         }
                     })
