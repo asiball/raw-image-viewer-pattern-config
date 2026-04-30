@@ -540,11 +540,18 @@ export function activate(context: vscode.ExtensionContext): void {
       };
 
       try {
+        let needsWrite = false;
         try {
-          await vscode.workspace.fs.stat(configUri);
-          // ファイルが既に存在する場合はそのまま開く
+          const existing = await vscode.workspace.fs.readFile(configUri);
+          if (Buffer.from(existing).toString('utf8').trim() === '') {
+            // ファイルが空の場合はテンプレートで上書きする
+            needsWrite = true;
+          }
         } catch {
           // ファイルが存在しない場合は新規作成する
+          needsWrite = true;
+        }
+        if (needsWrite) {
           await vscode.workspace.fs.writeFile(
             configUri,
             Buffer.from(JSON.stringify(template, null, 2), 'utf8')
