@@ -7,7 +7,7 @@
   "publisher": "asiball",
   "repository": {
     "type": "git",
-    "url": "https://github.com/asiball/vscode-rawimage-viewer"
+    "url": "https://github.com/asiball/raw-image-viewer-pattern-config"
   },
   "engines": {
     "vscode": "^1.90.0"
