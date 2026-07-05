@@ -127,7 +127,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && tsc -p tsconfig.webview.json && esbuild src/webview/main.ts --bundle --outfile=out/webview/main.js --format=iife --platform=browser --target=es2022",
     "watch": "tsc -watch -p ./",
     "validate:release": "node scripts/validate-release-version.mjs",
     "format": "prettier --write .",
@@ -147,6 +147,7 @@
     "@types/vscode": "^1.90.0",
     "@vscode/test-cli": "^0.0.11",
     "@vscode/test-electron": "^2.5.2",
+    "esbuild": "^0.28.1",
     "eslint": "^9.39.3",
     "globals": "^16.4.0",
     "prettier": "^3.6.2",

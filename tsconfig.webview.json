@@ -1,0 +1,14 @@
+{
+  // Webview 側コード（src/webview）専用の型検査設定。
+  // ブラウザ環境で実行されるため DOM lib を追加し、Node/VS Code の環境型
+  // （@types/node, @types/vscode, @types/mocha）は含めない
+  // （setTimeout の戻り値型などが Node と DOM で衝突するため）。
+  // emit はしない（実際のバンドル生成は esbuild が担う。npm run compile 参照）。
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "noEmit": true
+  },
+  "include": ["src/webview/**/*.ts", "src/decoder.ts", "src/types.ts"]
+}
