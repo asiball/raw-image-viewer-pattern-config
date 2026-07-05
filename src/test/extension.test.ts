@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vm from 'vm';
 
@@ -24,8 +25,10 @@ import {
 // 設定関連の関数は config.ts から
 import {
   extractPatternKeyOrder,
+  findConfigPath,
   getConfigSearchDirectories,
   inferRawImageConfigFromFilename,
+  loadRawImageConfig,
   parseRawImageConfig,
   resolveFallbackRawImageConfig,
 } from '../config';
@@ -778,6 +781,127 @@ suite('Extension Test Suite', () => {
       schema.definitions.imageConfig.properties.format.enumDescriptions.length,
       schemaFormats.length,
       'enumDescriptions count must match enum count'
+    );
+  });
+
+  test('package.json rawviewer.defaultFormat enum matches extension supported formats', () => {
+    // contributes.configuration の enum が types.ts の supportedFormats と
+    // 乖離すると、設定 UI に存在しないフォーマットが並ぶ・新フォーマットが
+    // 選べないといった不整合が起きるため、両者の一致を検証する。
+    const packageJsonPath = path.join(__dirname, '..', '..', 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
+      contributes: {
+        configuration: {
+          properties: Record<string, { enum?: string[] }>;
+        };
+      };
+    };
+    const enumValues =
+      packageJson.contributes.configuration.properties['rawviewer.defaultFormat'].enum;
+    assert.deepStrictEqual(enumValues, [...supportedFormats]);
+  });
+
+  test('findConfigPath discovers .rawimagerc from nested paths and loadRawImageConfig loads it', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rawviewer-config-test-'));
+    try {
+      const configPath = path.join(tmpRoot, '.rawimagerc');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          patterns: { '**': { width: 12, height: 34, headerSize: 2, format: 'gray8' } },
+        }),
+        'utf8'
+      );
+      const nestedDir = path.join(tmpRoot, 'a', 'b');
+      fs.mkdirSync(nestedDir, { recursive: true });
+      const targetFile = path.join(nestedDir, 'frame.raw');
+      fs.writeFileSync(targetFile, Buffer.alloc(4));
+
+      // ネストしたサブディレクトリのファイルから上方向探索で発見できる
+      assert.strictEqual(findConfigPath(targetFile), configPath);
+
+      // 発見した設定ファイルを正しくロード・解決できる
+      assert.deepStrictEqual(loadRawImageConfig(configPath, targetFile), {
+        width: 12,
+        height: 34,
+        headerSize: 2,
+        format: 'gray8',
+      });
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('findConfigPath returns undefined when no .rawimagerc exists in the temp tree', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rawviewer-noconfig-test-'));
+    try {
+      const targetFile = path.join(tmpRoot, 'frame.raw');
+      fs.writeFileSync(targetFile, Buffer.alloc(1));
+
+      const found = findConfigPath(targetFile);
+      // os.tmpdir() の祖先ディレクトリに .rawimagerc が存在する環境でも壊れない
+      // よう、「一時ディレクトリ配下では見つからない」ことを検証する
+      assert.ok(
+        found === undefined || !found.startsWith(tmpRoot),
+        `expected no .rawimagerc inside ${tmpRoot}, but found ${found}`
+      );
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('resolveFallbackRawImageConfig returns null config when nothing resolves', () => {
+    assert.deepStrictEqual(resolveFallbackRawImageConfig('/repo/captures/frame.raw', {}), {
+      config: null,
+    });
+  });
+
+  test('resolveFallbackRawImageConfig resolves from filename inference alone', () => {
+    assert.deepStrictEqual(
+      resolveFallbackRawImageConfig('/repo/captures/frame_640x480_gray8.raw'),
+      {
+        config: {
+          width: 640,
+          height: 480,
+          headerSize: 0,
+          format: 'gray8',
+        },
+        source: 'filename',
+      }
+    );
+  });
+
+  test('decodeRawImageToRgba decodes grayscale batch formats', () => {
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([0, 128, 255]), 3, 1, 'gray8')),
+      [0, 0, 0, 255, 128, 128, 128, 255, 255, 255, 255, 255]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([0x34, 0x12, 0xcd, 0xab]), 2, 1, 'gray16le')),
+      [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 255]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([0x12, 0x34, 0xab, 0xcd]), 2, 1, 'gray16be')),
+      [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 255]
+    );
+  });
+
+  test('decodeRawImageToRgba decodes interleaved RGB-family batch formats', () => {
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([1, 2, 3, 4, 5, 6]), 2, 1, 'rgb24')),
+      [1, 2, 3, 255, 4, 5, 6, 255]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([1, 2, 3, 4, 5, 6]), 2, 1, 'bgr24')),
+      [3, 2, 1, 255, 6, 5, 4, 255]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]), 2, 1, 'rgba32')),
+      [1, 2, 3, 4, 5, 6, 7, 8]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]), 2, 1, 'bgra32')),
+      [3, 2, 1, 4, 7, 6, 5, 8]
     );
   });
 
