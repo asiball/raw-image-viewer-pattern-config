@@ -6,6 +6,20 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Added
+
+- **Colormap selector** for grayscale-family formats (`gray8`, `gray16le`, `gray16be`, `depth16`, `float32`) — choose between Grayscale (default), Jet, Viridis, and Hot, applied after window/level normalization
+
+### Changed
+
+- Webview styling now uses VS Code theme variables for better light/dark/high-contrast support; added focus-visible outlines and tooltips to the viewer toolbar buttons
+
+### Fixed
+
+- Error boxes now expose `role="alert"` for screen readers, and the colormap selector has an accessible label
+- `rawviewer.createConfig` now overwrites an existing but empty `.rawimagerc` with the template instead of leaving it untouched
+- The `render` message handler called an undefined `renderImage()` function (introduced by a prior refactor), which meant no image was ever rendered and errors were silently swallowed; the inline rendering logic now runs correctly
+
 ## [0.1.0] - 2026-04-27
 
 ### Added

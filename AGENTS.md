@@ -13,14 +13,20 @@ npm test             # フルスイート: compile + lint + vscode-test（Electr
 
 ## アーキテクチャ
 
-外部ランタイム依存なしの単一ファイル VS Code 拡張（`src/extension.ts`）。
+外部ランタイム依存なしの VS Code 拡張。`src/` 配下は役割ごとに 5 モジュールへ分割されている。
+
+- `extension.ts` — VS Code 統合層。`RawImageEditorProvider` の実装、コマンド登録、設定探索・Webview 生成の呼び出しなど拡張のエントリポイント。
+- `config.ts` — `.rawimagerc` の探索（`findConfigPath()`）・パース・検証、ファイル名からの推論、ワークスペース設定へのフォールバックなど設定解決ロジック。
+- `decoder.ts` — 各ピクセルフォーマットのデコード処理（ストリーミングデコード状態管理、YUV/グレースケール/Float32 変換、ウィンドウ/レベル適用など）。Webview 側にも `.toString()` で文字列化して埋め込まれ、同じロジックを共有する。
+- `webviewHtml.ts` — Webview の HTML/CSS/JS を生成する（`buildWebviewHtml()` / `getWebviewHtml()`）。
+- `types.ts` — 設定・フォーマット関連の型定義と定数。
 
 **データフロー:**
 
-1. `RawImageEditorProvider`（`CustomReadonlyEditorProvider` 実装）がファイルを開き、`WebviewPanel` を作成する。
-2. Webview の HTML（レンダリングロジックを含む）は `getWebviewHtml()` がテンプレート文字列としてインラインで生成する。HTML/CSS/JS の独立したアセットファイルは存在しない。
-3. Extension が `findConfigPath()` で `.rawimagerc` を探し（ファイル位置から上位ディレクトリへ `.editorconfig` 方式で探索）、`postMessage` で `render` メッセージを Webview へ送信する。
-4. Webview は VS Code の Webview URI に対して `fetch()` でバイナリファイルを読み込み、設定で指定されたフォーマットに従って HTML5 `<canvas>` にピクセルを描画する。
+1. `RawImageEditorProvider`（`CustomReadonlyEditorProvider` 実装、`extension.ts`）がファイルを開き、`WebviewPanel` を作成する。
+2. Webview の HTML（レンダリングロジックを含む）は `webviewHtml.ts` の `getWebviewHtml()` がテンプレート文字列としてインラインで生成する。HTML/CSS/JS の独立したアセットファイルは存在しない。
+3. Extension が `config.ts` の `findConfigPath()` で `.rawimagerc` を探し（ファイル位置から上位ディレクトリへ `.editorconfig` 方式で探索）、`postMessage` で `render` メッセージを Webview へ送信する。
+4. Webview は VS Code の Webview URI に対して `fetch()` でバイナリファイルを読み込み、設定で指定されたフォーマットに従って HTML5 `<canvas>` にピクセルを描画する（デコードロジックは `decoder.ts` 由来）。
 
 **メッセージプロトコル（Extension ↔ Webview）:**
 
@@ -43,12 +49,12 @@ npm test             # フルスイート: compile + lint + vscode-test（Electr
 
 ## 主要な規約
 
-- **Webview JS は意図的にバニラ JavaScript**（TypeScript ではない）。`getWebviewHtml()` 内の文字列として存在し、残りのコードベースと一緒にコンパイル・Lint できない。
+- **Webview JS は意図的にバニラ JavaScript**（TypeScript ではない）。`webviewHtml.ts` の `getWebviewHtml()` 内の文字列として存在し、残りのコードベースと一緒にコンパイル・Lint できない。
 - **CSP は厳格:** `script-src 'nonce-...'` のみ。インラインスクリプトはすべて nonce を使用すること。外部スクリプトは不可。
 - **`localResourceRoots`** は開いたファイルのあるディレクトリを常に含む。設定ファイル（`.rawimagerc`）が別ディレクトリで見つかった場合はそのディレクトリも追加され、最大 2 ディレクトリになる。
 - TypeScript の **strict モード**が有効。`tsc` でクリーンにコンパイルできること。
 - ESLint が適用するルール: `curly`、`eqeqeq`、`semi`、`no-throw-literal`、`@typescript-eslint/naming-convention`（import は camelCase または PascalCase）。
-- サポートするピクセルフォーマットは `getWebviewHtml()` 内の Webview の switch 文で完全に定義される。新しいフォーマットを追加するには、switch 文と設定未検出時に表示されるヘルプテーブルの両方を更新する必要がある。
+- サポートするピクセルフォーマットは `webviewHtml.ts` の `getWebviewHtml()` 内の Webview の switch 文で完全に定義される。新しいフォーマットを追加するには、switch 文と設定未検出時に表示されるヘルプテーブルの両方を更新する必要がある。
 
 ## GitHub Issues・PR の確認
 
