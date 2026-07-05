@@ -31,10 +31,12 @@ import {
   validateOptionalPositiveInteger,
 } from './config';
 import type {
+  ExtensionToWebviewMessage,
   InitialRenderHandshake,
   RawImageFallbackSettings,
   TimeoutCanceler,
   TimeoutScheduler,
+  WebviewToExtensionMessage,
 } from './types';
 import { buildWebviewHtml } from './webviewHtml';
 
@@ -161,19 +163,21 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
         const fileUri = webviewPanel.webview.asWebviewUri(document.uri).toString();
 
         // Webview に描画指示を送る（Webview は fetch でファイルを読み込み canvas に描画する）
-        webviewPanel.webview.postMessage({
+        const renderMessage: ExtensionToWebviewMessage = {
           type: 'render',
           config: resolvedConfig.config,
           configSource: resolvedConfig.source ?? null,
           fileUri,
           fileSize: fileStat.size,
-        });
+        };
+        webviewPanel.webview.postMessage(renderMessage);
       } catch (err: unknown) {
         // エラーが起きたら Webview にエラーメッセージを送る
-        webviewPanel.webview.postMessage({
+        const errorMessage: ExtensionToWebviewMessage = {
           type: 'error',
           message: err instanceof Error ? err.message : String(err),
-        });
+        };
+        webviewPanel.webview.postMessage(errorMessage);
       }
     };
 
@@ -212,7 +216,13 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
     });
 
     // Webview からのメッセージを受け取るリスナーを登録する
-    const listener = webviewPanel.webview.onDidReceiveMessage(async (message) => {
+    // （postMessage 由来の値は信頼できないため unknown で受けて型ガードで絞り込む）
+    const listener = webviewPanel.webview.onDidReceiveMessage(async (rawMessage: unknown) => {
+      const message = parseWebviewMessage(rawMessage);
+      if (!message) {
+        return; // プロトコル外のメッセージは無視する
+      }
+
       // 'ready' メッセージはハンドシェイクが処理する
       if (initialRenderHandshake.handleMessage(message.type)) {
         return;
@@ -284,6 +294,28 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
       vscode.Disposable.from(...panelDisposables).dispose();
     });
   }
+}
+
+// =============================================================================
+// Webview メッセージの型ガード
+// =============================================================================
+
+/**
+ * Webview から届いた未知の値を WebviewToExtensionMessage に絞り込みます。
+ * プロトコルに一致しないメッセージは undefined を返し、呼び出し側で無視されます。
+ */
+export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const candidate = value as { type?: unknown; dataUrl?: unknown };
+  if (candidate.type === 'ready') {
+    return { type: 'ready' };
+  }
+  if (candidate.type === 'savePng' && typeof candidate.dataUrl === 'string') {
+    return { type: 'savePng', dataUrl: candidate.dataUrl };
+  }
+  return undefined;
 }
 
 // =============================================================================

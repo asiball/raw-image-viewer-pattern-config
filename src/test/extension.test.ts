@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vm from 'vm';
 
@@ -17,19 +18,24 @@ import {
   createGrayDecodeState,
   createRawImageDecodeState,
   decodeRawImageToRgba,
+  decodeRawPixel,
   getBytesPerPixel,
 } from '../decoder';
 
 // 設定関連の関数は config.ts から
 import {
+  extractPatternKeyOrder,
+  findConfigPath,
   getConfigSearchDirectories,
   inferRawImageConfigFromFilename,
+  loadRawImageConfig,
   parseRawImageConfig,
   resolveFallbackRawImageConfig,
 } from '../config';
 
 // 型定数は types.ts から
 import { supportedFormats } from '../types';
+import type { GrayscaleStreamFormat, StreamDecodableRawImageFormat } from '../types';
 
 // VS Code 統合層の関数は extension.ts から
 import {
@@ -37,6 +43,7 @@ import {
   decodePngDataUrl,
   getLocalResourceRoots,
   getSuggestedPngSaveUri,
+  parseWebviewMessage,
 } from '../extension';
 
 // Webview HTML/JS 生成は webviewHtml.ts から
@@ -222,6 +229,19 @@ suite('Extension Test Suite', () => {
 
   test('decodePngDataUrl rejects invalid payloads', () => {
     assert.throws(() => decodePngDataUrl('not-a-data-url'), /Invalid PNG data/);
+  });
+
+  test('parseWebviewMessage narrows valid messages and rejects malformed ones', () => {
+    assert.deepStrictEqual(parseWebviewMessage({ type: 'ready' }), { type: 'ready' });
+    assert.deepStrictEqual(
+      parseWebviewMessage({ type: 'savePng', dataUrl: 'data:image/png;base64,AQID' }),
+      { type: 'savePng', dataUrl: 'data:image/png;base64,AQID' }
+    );
+    assert.strictEqual(parseWebviewMessage({ type: 'savePng' }), undefined);
+    assert.strictEqual(parseWebviewMessage({ type: 'savePng', dataUrl: 42 }), undefined);
+    assert.strictEqual(parseWebviewMessage({ type: 'unknown' }), undefined);
+    assert.strictEqual(parseWebviewMessage(null), undefined);
+    assert.strictEqual(parseWebviewMessage('ready'), undefined);
   });
 
   test('getBytesPerPixel matches supported stream formats', () => {
@@ -672,6 +692,74 @@ suite('Extension Test Suite', () => {
     });
   });
 
+  test('parseRawImageConfig ignores patterns when target is outside the config directory', () => {
+    // 対象ファイルが configDir の外側（相対パスが ".." 始まり）にある場合、
+    // "**" のような広いパターンでも誤ってマッチしてはならない。
+    // Windows のクロスドライブ（path.relative が絶対パスを返す）も同じガードで防ぐ。
+    const config = { patterns: { '**': { width: 100, height: 100 } } };
+    const configPath =
+      process.platform === 'win32' ? 'C:\\repo\\sub\\.rawimagerc' : '/repo/sub/.rawimagerc';
+    const outsideFile = process.platform === 'win32' ? 'C:\\repo\\other.raw' : '/repo/other.raw';
+
+    // どのパターンにもマッチしない → width が未解決でエラーになる
+    assert.throws(
+      () => parseRawImageConfig(JSON.stringify(config), configPath, outsideFile),
+      /"width" must be a positive integer/
+    );
+  });
+
+  test('parseRawImageConfig respects source order for integer-like keys (last-wins)', () => {
+    // 整数風キー（"12"）を "*" より後に記述した場合、記述順どおり "12" が勝つこと。
+    // JSON.stringify したオブジェクトでは JS が "12" を先頭に並べ替えてしまうため、
+    // 生テキストを直接組み立ててソース順を固定する。
+    const raw =
+      '{\n' +
+      '  "patterns": {\n' +
+      '    "*": { "width": 8, "height": 8, "format": "rgb24" },\n' +
+      '    "12": { "width": 8, "height": 8, "format": "gray8" }\n' +
+      '  }\n' +
+      '}';
+    const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
+    // 相対パスが "12" になり、"*" と "12" の両方に一致する
+    const target = process.platform === 'win32' ? 'C:\\repo\\12' : '/repo/12';
+
+    const result = parseRawImageConfig(raw, configPath, target);
+    assert.strictEqual(
+      result.format,
+      'gray8',
+      'later-in-source pattern ("12") must win over earlier "*"'
+    );
+
+    // 逆順（"12" が先、"*" が後）なら "*" が勝つ
+    const rawReversed =
+      '{\n' +
+      '  "patterns": {\n' +
+      '    "12": { "width": 8, "height": 8, "format": "gray8" },\n' +
+      '    "*": { "width": 8, "height": 8, "format": "rgb24" }\n' +
+      '  }\n' +
+      '}';
+    assert.strictEqual(parseRawImageConfig(rawReversed, configPath, target).format, 'rgb24');
+  });
+
+  test('extractPatternKeyOrder returns keys in source order handling braces and escapes', () => {
+    const raw =
+      '{\n' +
+      '  "patterns": {\n' +
+      '    "*": { "width": 8, "height": 8, "format": "rgb24" },\n' +
+      '    "**/a{b}/*.bin": { "width": 4, "height": 4 },\n' +
+      '    "esc\\"quote": { "width": 2, "height": 2 },\n' +
+      '    "12": { "width": 2, "height": 2 }\n' +
+      '  }\n' +
+      '}';
+    assert.deepStrictEqual(extractPatternKeyOrder(raw), ['*', '**/a{b}/*.bin', 'esc"quote', '12']);
+  });
+
+  test('extractPatternKeyOrder returns null when patterns block is absent or malformed', () => {
+    assert.strictEqual(extractPatternKeyOrder('{ "width": 8 }'), null);
+    assert.strictEqual(extractPatternKeyOrder('{ "patterns": [1, 2] }'), null);
+    assert.strictEqual(extractPatternKeyOrder('{ "patterns": {'), null);
+  });
+
   test('rawimagerc.schema.json format enum matches extension supported formats', () => {
     const schemaPath = path.join(__dirname, '..', '..', 'schemas', 'rawimagerc.schema.json');
     const schemaContent = fs.readFileSync(schemaPath, 'utf8');
@@ -694,6 +782,249 @@ suite('Extension Test Suite', () => {
       schemaFormats.length,
       'enumDescriptions count must match enum count'
     );
+  });
+
+  test('package.json rawviewer.defaultFormat enum matches extension supported formats', () => {
+    // contributes.configuration の enum が types.ts の supportedFormats と
+    // 乖離すると、設定 UI に存在しないフォーマットが並ぶ・新フォーマットが
+    // 選べないといった不整合が起きるため、両者の一致を検証する。
+    const packageJsonPath = path.join(__dirname, '..', '..', 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
+      contributes: {
+        configuration: {
+          properties: Record<string, { enum?: string[] }>;
+        };
+      };
+    };
+    const enumValues =
+      packageJson.contributes.configuration.properties['rawviewer.defaultFormat'].enum;
+    assert.deepStrictEqual(enumValues, [...supportedFormats]);
+  });
+
+  test('findConfigPath discovers .rawimagerc from nested paths and loadRawImageConfig loads it', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rawviewer-config-test-'));
+    try {
+      const configPath = path.join(tmpRoot, '.rawimagerc');
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+          patterns: { '**': { width: 12, height: 34, headerSize: 2, format: 'gray8' } },
+        }),
+        'utf8'
+      );
+      const nestedDir = path.join(tmpRoot, 'a', 'b');
+      fs.mkdirSync(nestedDir, { recursive: true });
+      const targetFile = path.join(nestedDir, 'frame.raw');
+      fs.writeFileSync(targetFile, Buffer.alloc(4));
+
+      // ネストしたサブディレクトリのファイルから上方向探索で発見できる
+      assert.strictEqual(findConfigPath(targetFile), configPath);
+
+      // 発見した設定ファイルを正しくロード・解決できる
+      assert.deepStrictEqual(loadRawImageConfig(configPath, targetFile), {
+        width: 12,
+        height: 34,
+        headerSize: 2,
+        format: 'gray8',
+      });
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('findConfigPath returns undefined when no .rawimagerc exists in the temp tree', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rawviewer-noconfig-test-'));
+    try {
+      const targetFile = path.join(tmpRoot, 'frame.raw');
+      fs.writeFileSync(targetFile, Buffer.alloc(1));
+
+      const found = findConfigPath(targetFile);
+      // os.tmpdir() の祖先ディレクトリに .rawimagerc が存在する環境でも壊れない
+      // よう、「一時ディレクトリ配下では見つからない」ことを検証する
+      assert.ok(
+        found === undefined || !found.startsWith(tmpRoot),
+        `expected no .rawimagerc inside ${tmpRoot}, but found ${found}`
+      );
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('resolveFallbackRawImageConfig returns null config when nothing resolves', () => {
+    assert.deepStrictEqual(resolveFallbackRawImageConfig('/repo/captures/frame.raw', {}), {
+      config: null,
+    });
+  });
+
+  test('resolveFallbackRawImageConfig resolves from filename inference alone', () => {
+    assert.deepStrictEqual(
+      resolveFallbackRawImageConfig('/repo/captures/frame_640x480_gray8.raw'),
+      {
+        config: {
+          width: 640,
+          height: 480,
+          headerSize: 0,
+          format: 'gray8',
+        },
+        source: 'filename',
+      }
+    );
+  });
+
+  test('decodeRawImageToRgba decodes grayscale batch formats', () => {
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([0, 128, 255]), 3, 1, 'gray8')),
+      [0, 0, 0, 255, 128, 128, 128, 255, 255, 255, 255, 255]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([0x34, 0x12, 0xcd, 0xab]), 2, 1, 'gray16le')),
+      [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 255]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([0x12, 0x34, 0xab, 0xcd]), 2, 1, 'gray16be')),
+      [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 255]
+    );
+  });
+
+  test('decodeRawImageToRgba decodes interleaved RGB-family batch formats', () => {
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([1, 2, 3, 4, 5, 6]), 2, 1, 'rgb24')),
+      [1, 2, 3, 255, 4, 5, 6, 255]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([1, 2, 3, 4, 5, 6]), 2, 1, 'bgr24')),
+      [3, 2, 1, 255, 6, 5, 4, 255]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]), 2, 1, 'rgba32')),
+      [1, 2, 3, 4, 5, 6, 7, 8]
+    );
+    assert.deepStrictEqual(
+      Array.from(decodeRawImageToRgba(Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]), 2, 1, 'bgra32')),
+      [3, 2, 1, 4, 7, 6, 5, 8]
+    );
+  });
+
+  // グレースケール系フォーマットについて、ストリーミング経路と一括経路が
+  // 同一入力から同一の結果を生成することを検証する等価性テスト。
+  //
+  // 注意: gray16 系の GrayDecodeState 経路（appendGrayChunk + applyWindowLevel）は
+  // ウィンドウ/レベルによる線形マッピング（round(v / 65535 * 255)）を行うため、
+  // 上位バイト抽出（v >> 8）を行う一括経路とは表示マッピングが仕様上異なる。
+  // したがって gray16 系の RGBA バイト一致は「同じ >> 8 マッピングを使う」
+  // appendRawImageChunk ストリーミング経路と比較する。GrayDecodeState 経路は
+  // チャンク分割の有無で rawGray と RGBA が一致することを検証する。
+  suite('Grayscale streaming vs batch equivalence', () => {
+    function decodeViaRawImageStream(
+      data: Uint8Array,
+      width: number,
+      height: number,
+      format: StreamDecodableRawImageFormat,
+      chunkSize: number
+    ): Uint8ClampedArray {
+      const pixels = new Uint8ClampedArray(width * height * 4);
+      const state = createRawImageDecodeState(width, height, 0, format);
+      for (let i = 0; i < data.length; i += chunkSize) {
+        appendRawImageChunk(state, data.subarray(i, Math.min(i + chunkSize, data.length)), pixels);
+      }
+      return pixels;
+    }
+
+    function decodeGrayStream(
+      data: Uint8Array,
+      width: number,
+      height: number,
+      format: GrayscaleStreamFormat,
+      chunkSize: number
+    ): { rawGray: Uint16Array; maxValue: number } {
+      const state = createGrayDecodeState(width, height, 0, format);
+      for (let i = 0; i < data.length; i += chunkSize) {
+        appendGrayChunk(state, data.subarray(i, Math.min(i + chunkSize, data.length)));
+      }
+      return { rawGray: state.rawGray, maxValue: state.maxValue };
+    }
+
+    const gray8Data = Uint8Array.from([0, 1, 127, 128, 254, 255]);
+    const gray16Data = Uint8Array.from([
+      0x00, 0x00, 0x34, 0x12, 0xff, 0x00, 0x00, 0xff, 0xcd, 0xab, 0xff, 0xff,
+    ]);
+
+    test('appendRawImageChunk stream matches decodeRawImageToRgba batch (gray8/gray16le/gray16be)', () => {
+      const cases: Array<[StreamDecodableRawImageFormat, Uint8Array]> = [
+        ['gray8', gray8Data],
+        ['gray16le', gray16Data],
+        ['gray16be', gray16Data],
+      ];
+      for (const [format, data] of cases) {
+        const batch = decodeRawImageToRgba(data, 3, 2, format);
+        // チャンク境界でピクセルが分断されるよう 1 バイトずつ供給する
+        for (const chunkSize of [1, 3, data.length]) {
+          const streamed = decodeViaRawImageStream(data, 3, 2, format, chunkSize);
+          assert.deepStrictEqual(
+            Array.from(streamed),
+            Array.from(batch),
+            `${format} (chunkSize=${chunkSize}) stream/batch mismatch`
+          );
+        }
+      }
+    });
+
+    test('appendGrayChunk chunked matches single-pass rawGray and RGBA (gray8/gray16le/gray16be/depth16)', () => {
+      const cases: Array<[GrayscaleStreamFormat, Uint8Array]> = [
+        ['gray8', gray8Data],
+        ['gray16le', gray16Data],
+        ['gray16be', gray16Data],
+        ['depth16', gray16Data],
+      ];
+      for (const [format, data] of cases) {
+        const single = decodeGrayStream(data, 3, 2, format, data.length);
+        const chunked = decodeGrayStream(data, 3, 2, format, 1);
+        assert.deepStrictEqual(
+          Array.from(chunked.rawGray),
+          Array.from(single.rawGray),
+          `${format} rawGray mismatch between chunked and single-pass`
+        );
+
+        const singlePixels = new Uint8ClampedArray(3 * 2 * 4);
+        const chunkedPixels = new Uint8ClampedArray(3 * 2 * 4);
+        applyWindowLevel(single.rawGray, 6, 0, single.maxValue, singlePixels);
+        applyWindowLevel(chunked.rawGray, 6, 0, chunked.maxValue, chunkedPixels);
+        assert.deepStrictEqual(
+          Array.from(chunkedPixels),
+          Array.from(singlePixels),
+          `${format} RGBA mismatch between chunked and single-pass`
+        );
+      }
+    });
+
+    test('gray8: appendGrayChunk + full-range window matches batch decodeRawImageToRgba', () => {
+      // gray8 は全レンジ（0..255）のウィンドウで恒等マッピングになるため、
+      // GrayDecodeState 経路と一括経路が RGBA バイト単位で一致する。
+      const { rawGray } = decodeGrayStream(gray8Data, 3, 2, 'gray8', 1);
+      const streamedPixels = new Uint8ClampedArray(3 * 2 * 4);
+      applyWindowLevel(rawGray, 6, 0, 255, streamedPixels);
+      const batch = decodeRawImageToRgba(gray8Data, 3, 2, 'gray8');
+      assert.deepStrictEqual(Array.from(streamedPixels), Array.from(batch));
+    });
+
+    test('depth16 batch decode is identical to gray16le batch decode (shared implementation)', () => {
+      const le = decodeRawImageToRgba(gray16Data, 3, 2, 'gray16le');
+      const depth = decodeRawImageToRgba(gray16Data, 3, 2, 'depth16');
+      assert.deepStrictEqual(Array.from(depth), Array.from(le));
+    });
+
+    test('appendGrayChunk raw values agree with decodeRawPixel >> 8 display values', () => {
+      // GrayDecodeState が保持する生値の上位バイトは、decodeRawPixel が返す
+      // 表示値（>> 8）と一致していなければならない（同じ共有ヘルパーに基づく）。
+      const formats: Array<'gray16le' | 'gray16be'> = ['gray16le', 'gray16be'];
+      for (const format of formats) {
+        const { rawGray } = decodeGrayStream(gray16Data, 3, 2, format, 2);
+        for (let p = 0; p < 6; p++) {
+          const [r] = decodeRawPixel(gray16Data, p * 2, format);
+          assert.strictEqual(rawGray[p] >> 8, r, `${format} pixel ${p}`);
+        }
+      }
+    });
   });
 
   // buildWebviewHtml() が生成する <script nonce="..."> の中身を Node の vm モジュールで
@@ -735,12 +1066,12 @@ suite('Extension Test Suite', () => {
       return el;
     }
 
-    function runWebviewScript(): {
-      dispatchMessage: (data: unknown) => void;
+    function createWebviewVmContext(): {
+      context: Record<string, unknown>;
       root: Record<string, unknown>;
+      messageListeners: Array<(event: { data: unknown }) => void>;
       postedMessages: unknown[];
     } {
-      const script = extractWebviewScript();
       const root = createElementStub();
       const messageListeners: Array<(event: { data: unknown }) => void> = [];
       const postedMessages: unknown[] = [];
@@ -800,6 +1131,17 @@ suite('Extension Test Suite', () => {
       };
       vm.createContext(context);
 
+      return { context, root, messageListeners, postedMessages };
+    }
+
+    function runWebviewScript(): {
+      dispatchMessage: (data: unknown) => void;
+      root: Record<string, unknown>;
+      postedMessages: unknown[];
+    } {
+      const script = extractWebviewScript();
+      const { context, root, messageListeners, postedMessages } = createWebviewVmContext();
+
       // 構文エラー（例: 修正① 以前の未定義 renderImage() によるブレース崩れ）が
       // あればここで例外が発生する。
       vm.runInContext(script, context);
@@ -843,6 +1185,60 @@ suite('Extension Test Suite', () => {
         String(root.innerHTML).includes('boom'),
         'expected the error message to be rendered'
       );
+    });
+
+    test('embedded gray16 decode paths run in the webview script without ReferenceError', () => {
+      // decoder.ts の関数が共有ヘルパー（combineGray16Bytes / readGray16Sample）に
+      // 依存するようになったため、ヘルパーの埋め込み漏れがあると Webview 側で
+      // 実行時 ReferenceError になる。埋め込まれた関数を vm 内で実際に呼び出して
+      // デコード経路が最後まで動くことを検証する。
+      const script = extractWebviewScript();
+      const { context } = createWebviewVmContext();
+
+      // decodeRawImageToRgba はスクリプト内の const のため、同一スクリプトの
+      // 末尾でグローバルへ公開してから別スクリプトで呼び出す。
+      vm.runInContext(
+        script + '\n;globalThis.__decodeRawImageToRgba = decodeRawImageToRgba;',
+        context
+      );
+
+      // 結果はクロス realm のプロトタイプ差異を避けるため JSON 文字列で受け取る
+      const resultJson = vm.runInContext(
+        `(function () {
+          var bytes = new Uint8Array([0x34, 0x12, 0xcd, 0xab]);
+          var batchLe = Array.from(__decodeRawImageToRgba(bytes, 2, 1, 'gray16le'));
+          var batchBe = Array.from(__decodeRawImageToRgba(bytes, 2, 1, 'gray16be'));
+          var batchDepth = Array.from(__decodeRawImageToRgba(bytes, 2, 1, 'depth16'));
+          var pixels = new Uint8ClampedArray(8);
+          var st = createRawImageDecodeState(2, 1, 0, 'gray16le');
+          appendRawImageChunk(st, bytes, pixels);
+          var stream = Array.from(pixels);
+          var gs = createGrayDecodeState(2, 1, 0, 'depth16');
+          appendGrayChunk(gs, bytes);
+          var gray = Array.from(gs.rawGray);
+          return JSON.stringify({
+            batchLe: batchLe,
+            batchBe: batchBe,
+            batchDepth: batchDepth,
+            stream: stream,
+            gray: gray,
+          });
+        })()`,
+        context
+      ) as string;
+      const result = JSON.parse(resultJson) as {
+        batchLe: number[];
+        batchBe: number[];
+        batchDepth: number[];
+        stream: number[];
+        gray: number[];
+      };
+
+      assert.deepStrictEqual(result.batchLe, [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 255]);
+      assert.deepStrictEqual(result.batchBe, [0x34, 0x34, 0x34, 255, 0xcd, 0xcd, 0xcd, 255]);
+      assert.deepStrictEqual(result.batchDepth, result.batchLe);
+      assert.deepStrictEqual(result.stream, result.batchLe);
+      assert.deepStrictEqual(result.gray, [0x1234, 0xabcd]);
     });
   });
 });

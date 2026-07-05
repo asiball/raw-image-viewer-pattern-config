@@ -52,6 +52,17 @@ jobs:
       - name: Compile
         run: npm run compile
 
+      # vscode-test (Electron) はヘッドレス Linux で X サーバーを必要とするため
+      # xvfb 経由で実行する。ubuntu-latest には通常 xvfb がプリインストール
+      # されているが、ランナーイメージの変更に備えて防御的にインストールする。
+      - name: Install xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
+      - name: Test
+        run: xvfb-run -a npm test
+
       - name: Package extension
         shell: bash
         run: |

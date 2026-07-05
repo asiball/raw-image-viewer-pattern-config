@@ -78,7 +78,7 @@ gh pr view <number>             # PR の詳細確認
 
 PR タイトルプレフィックス: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`
 
-`main` への直接プッシュは禁止。CI はすべての PR とプッシュに対して `npm run lint`、`npm run compile`、`npm run format:check` を実行する。
+`main` への直接プッシュは禁止。CI はすべての PR とプッシュに対して `npm run lint`、`npm run compile`、`npm run format:check`、`xvfb-run -a npm test`（vscode-test。ヘッドレス Linux では xvfb 必須）を実行する。
 
 **コードを変更する場合は、変更を加える前にローカルブランチを作成すること。** 上記のブランチプレフィックスを使用し、AI エージェントの作業には `copilot/` を使用する。
 
