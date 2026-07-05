@@ -21,12 +21,14 @@ import {
   appendGrayChunk,
   appendRawImageChunk,
   applyWindowLevel,
+  combineGray16Bytes,
   createFloat32DecodeState,
   createGrayDecodeState,
   createRawImageDecodeState,
   decodeRawImageToRgba,
   decodeRawPixel,
   getBytesPerPixel,
+  readGray16Sample,
 } from './decoder';
 import { grayscaleStreamFormats, streamDecodableFormats, supportedFormats } from './types';
 
@@ -304,6 +306,8 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
 
         // 以下の関数は decodeRawImageToRgba 内や他の関数から参照されるため
         // グローバルスコープに展開する
+        ${combineGray16Bytes.toString()}
+        ${readGray16Sample.toString()}
         ${getBytesPerPixel.toString()}
         ${createRawImageDecodeState.toString()}
         ${decodeRawPixel.toString()}

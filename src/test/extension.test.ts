@@ -17,6 +17,7 @@ import {
   createGrayDecodeState,
   createRawImageDecodeState,
   decodeRawImageToRgba,
+  decodeRawPixel,
   getBytesPerPixel,
 } from '../decoder';
 
@@ -31,6 +32,7 @@ import {
 
 // 型定数は types.ts から
 import { supportedFormats } from '../types';
+import type { GrayscaleStreamFormat, StreamDecodableRawImageFormat } from '../types';
 
 // VS Code 統合層の関数は extension.ts から
 import {
@@ -763,6 +765,128 @@ suite('Extension Test Suite', () => {
     );
   });
 
+  // グレースケール系フォーマットについて、ストリーミング経路と一括経路が
+  // 同一入力から同一の結果を生成することを検証する等価性テスト。
+  //
+  // 注意: gray16 系の GrayDecodeState 経路（appendGrayChunk + applyWindowLevel）は
+  // ウィンドウ/レベルによる線形マッピング（round(v / 65535 * 255)）を行うため、
+  // 上位バイト抽出（v >> 8）を行う一括経路とは表示マッピングが仕様上異なる。
+  // したがって gray16 系の RGBA バイト一致は「同じ >> 8 マッピングを使う」
+  // appendRawImageChunk ストリーミング経路と比較する。GrayDecodeState 経路は
+  // チャンク分割の有無で rawGray と RGBA が一致することを検証する。
+  suite('Grayscale streaming vs batch equivalence', () => {
+    function decodeViaRawImageStream(
+      data: Uint8Array,
+      width: number,
+      height: number,
+      format: StreamDecodableRawImageFormat,
+      chunkSize: number
+    ): Uint8ClampedArray {
+      const pixels = new Uint8ClampedArray(width * height * 4);
+      const state = createRawImageDecodeState(width, height, 0, format);
+      for (let i = 0; i < data.length; i += chunkSize) {
+        appendRawImageChunk(state, data.subarray(i, Math.min(i + chunkSize, data.length)), pixels);
+      }
+      return pixels;
+    }
+
+    function decodeGrayStream(
+      data: Uint8Array,
+      width: number,
+      height: number,
+      format: GrayscaleStreamFormat,
+      chunkSize: number
+    ): { rawGray: Uint16Array; maxValue: number } {
+      const state = createGrayDecodeState(width, height, 0, format);
+      for (let i = 0; i < data.length; i += chunkSize) {
+        appendGrayChunk(state, data.subarray(i, Math.min(i + chunkSize, data.length)));
+      }
+      return { rawGray: state.rawGray, maxValue: state.maxValue };
+    }
+
+    const gray8Data = Uint8Array.from([0, 1, 127, 128, 254, 255]);
+    const gray16Data = Uint8Array.from([
+      0x00, 0x00, 0x34, 0x12, 0xff, 0x00, 0x00, 0xff, 0xcd, 0xab, 0xff, 0xff,
+    ]);
+
+    test('appendRawImageChunk stream matches decodeRawImageToRgba batch (gray8/gray16le/gray16be)', () => {
+      const cases: Array<[StreamDecodableRawImageFormat, Uint8Array]> = [
+        ['gray8', gray8Data],
+        ['gray16le', gray16Data],
+        ['gray16be', gray16Data],
+      ];
+      for (const [format, data] of cases) {
+        const batch = decodeRawImageToRgba(data, 3, 2, format);
+        // チャンク境界でピクセルが分断されるよう 1 バイトずつ供給する
+        for (const chunkSize of [1, 3, data.length]) {
+          const streamed = decodeViaRawImageStream(data, 3, 2, format, chunkSize);
+          assert.deepStrictEqual(
+            Array.from(streamed),
+            Array.from(batch),
+            `${format} (chunkSize=${chunkSize}) stream/batch mismatch`
+          );
+        }
+      }
+    });
+
+    test('appendGrayChunk chunked matches single-pass rawGray and RGBA (gray8/gray16le/gray16be/depth16)', () => {
+      const cases: Array<[GrayscaleStreamFormat, Uint8Array]> = [
+        ['gray8', gray8Data],
+        ['gray16le', gray16Data],
+        ['gray16be', gray16Data],
+        ['depth16', gray16Data],
+      ];
+      for (const [format, data] of cases) {
+        const single = decodeGrayStream(data, 3, 2, format, data.length);
+        const chunked = decodeGrayStream(data, 3, 2, format, 1);
+        assert.deepStrictEqual(
+          Array.from(chunked.rawGray),
+          Array.from(single.rawGray),
+          `${format} rawGray mismatch between chunked and single-pass`
+        );
+
+        const singlePixels = new Uint8ClampedArray(3 * 2 * 4);
+        const chunkedPixels = new Uint8ClampedArray(3 * 2 * 4);
+        applyWindowLevel(single.rawGray, 6, 0, single.maxValue, singlePixels);
+        applyWindowLevel(chunked.rawGray, 6, 0, chunked.maxValue, chunkedPixels);
+        assert.deepStrictEqual(
+          Array.from(chunkedPixels),
+          Array.from(singlePixels),
+          `${format} RGBA mismatch between chunked and single-pass`
+        );
+      }
+    });
+
+    test('gray8: appendGrayChunk + full-range window matches batch decodeRawImageToRgba', () => {
+      // gray8 は全レンジ（0..255）のウィンドウで恒等マッピングになるため、
+      // GrayDecodeState 経路と一括経路が RGBA バイト単位で一致する。
+      const { rawGray } = decodeGrayStream(gray8Data, 3, 2, 'gray8', 1);
+      const streamedPixels = new Uint8ClampedArray(3 * 2 * 4);
+      applyWindowLevel(rawGray, 6, 0, 255, streamedPixels);
+      const batch = decodeRawImageToRgba(gray8Data, 3, 2, 'gray8');
+      assert.deepStrictEqual(Array.from(streamedPixels), Array.from(batch));
+    });
+
+    test('depth16 batch decode is identical to gray16le batch decode (shared implementation)', () => {
+      const le = decodeRawImageToRgba(gray16Data, 3, 2, 'gray16le');
+      const depth = decodeRawImageToRgba(gray16Data, 3, 2, 'depth16');
+      assert.deepStrictEqual(Array.from(depth), Array.from(le));
+    });
+
+    test('appendGrayChunk raw values agree with decodeRawPixel >> 8 display values', () => {
+      // GrayDecodeState が保持する生値の上位バイトは、decodeRawPixel が返す
+      // 表示値（>> 8）と一致していなければならない（同じ共有ヘルパーに基づく）。
+      const formats: Array<'gray16le' | 'gray16be'> = ['gray16le', 'gray16be'];
+      for (const format of formats) {
+        const { rawGray } = decodeGrayStream(gray16Data, 3, 2, format, 2);
+        for (let p = 0; p < 6; p++) {
+          const [r] = decodeRawPixel(gray16Data, p * 2, format);
+          assert.strictEqual(rawGray[p] >> 8, r, `${format} pixel ${p}`);
+        }
+      }
+    });
+  });
+
   // buildWebviewHtml() が生成する <script nonce="..."> の中身を Node の vm モジュールで
   // 実際に実行し、構文エラーやハンドラ内の未定義参照（例: renderImage 呼び出しの
   // ReferenceError）が起きないことを検証するスモークテスト。
@@ -802,12 +926,12 @@ suite('Extension Test Suite', () => {
       return el;
     }
 
-    function runWebviewScript(): {
-      dispatchMessage: (data: unknown) => void;
+    function createWebviewVmContext(): {
+      context: Record<string, unknown>;
       root: Record<string, unknown>;
+      messageListeners: Array<(event: { data: unknown }) => void>;
       postedMessages: unknown[];
     } {
-      const script = extractWebviewScript();
       const root = createElementStub();
       const messageListeners: Array<(event: { data: unknown }) => void> = [];
       const postedMessages: unknown[] = [];
@@ -867,6 +991,17 @@ suite('Extension Test Suite', () => {
       };
       vm.createContext(context);
 
+      return { context, root, messageListeners, postedMessages };
+    }
+
+    function runWebviewScript(): {
+      dispatchMessage: (data: unknown) => void;
+      root: Record<string, unknown>;
+      postedMessages: unknown[];
+    } {
+      const script = extractWebviewScript();
+      const { context, root, messageListeners, postedMessages } = createWebviewVmContext();
+
       // 構文エラー（例: 修正① 以前の未定義 renderImage() によるブレース崩れ）が
       // あればここで例外が発生する。
       vm.runInContext(script, context);
@@ -910,6 +1045,60 @@ suite('Extension Test Suite', () => {
         String(root.innerHTML).includes('boom'),
         'expected the error message to be rendered'
       );
+    });
+
+    test('embedded gray16 decode paths run in the webview script without ReferenceError', () => {
+      // decoder.ts の関数が共有ヘルパー（combineGray16Bytes / readGray16Sample）に
+      // 依存するようになったため、ヘルパーの埋め込み漏れがあると Webview 側で
+      // 実行時 ReferenceError になる。埋め込まれた関数を vm 内で実際に呼び出して
+      // デコード経路が最後まで動くことを検証する。
+      const script = extractWebviewScript();
+      const { context } = createWebviewVmContext();
+
+      // decodeRawImageToRgba はスクリプト内の const のため、同一スクリプトの
+      // 末尾でグローバルへ公開してから別スクリプトで呼び出す。
+      vm.runInContext(
+        script + '\n;globalThis.__decodeRawImageToRgba = decodeRawImageToRgba;',
+        context
+      );
+
+      // 結果はクロス realm のプロトタイプ差異を避けるため JSON 文字列で受け取る
+      const resultJson = vm.runInContext(
+        `(function () {
+          var bytes = new Uint8Array([0x34, 0x12, 0xcd, 0xab]);
+          var batchLe = Array.from(__decodeRawImageToRgba(bytes, 2, 1, 'gray16le'));
+          var batchBe = Array.from(__decodeRawImageToRgba(bytes, 2, 1, 'gray16be'));
+          var batchDepth = Array.from(__decodeRawImageToRgba(bytes, 2, 1, 'depth16'));
+          var pixels = new Uint8ClampedArray(8);
+          var st = createRawImageDecodeState(2, 1, 0, 'gray16le');
+          appendRawImageChunk(st, bytes, pixels);
+          var stream = Array.from(pixels);
+          var gs = createGrayDecodeState(2, 1, 0, 'depth16');
+          appendGrayChunk(gs, bytes);
+          var gray = Array.from(gs.rawGray);
+          return JSON.stringify({
+            batchLe: batchLe,
+            batchBe: batchBe,
+            batchDepth: batchDepth,
+            stream: stream,
+            gray: gray,
+          });
+        })()`,
+        context
+      ) as string;
+      const result = JSON.parse(resultJson) as {
+        batchLe: number[];
+        batchBe: number[];
+        batchDepth: number[];
+        stream: number[];
+        gray: number[];
+      };
+
+      assert.deepStrictEqual(result.batchLe, [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 255]);
+      assert.deepStrictEqual(result.batchBe, [0x34, 0x34, 0x34, 255, 0xcd, 0xcd, 0xcd, 255]);
+      assert.deepStrictEqual(result.batchDepth, result.batchLe);
+      assert.deepStrictEqual(result.stream, result.batchLe);
+      assert.deepStrictEqual(result.gray, [0x1234, 0xabcd]);
     });
   });
 });

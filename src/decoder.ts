@@ -46,6 +46,34 @@ export function getBytesPerPixel(format: StreamDecodableRawImageFormat): number 
 }
 
 /**
+ * 16ビットグレー値を2バイトから組み立てます。
+ *
+ * ストリーミングデコード（appendGrayChunk）・ピクセル単位デコード
+ * （decodeRawPixel）・一括デコード（decodeRawImageToRgba）で共有される
+ * 単一実装です。gray16le / depth16 はリトルエンディアン、gray16be は
+ * ビッグエンディアンとして呼び出します。
+ *
+ * この関数は Webview にも `.toString()` で埋め込まれます（webviewHtml.ts）。
+ */
+export function combineGray16Bytes(byte0: number, byte1: number, littleEndian: boolean): number {
+  return littleEndian ? (byte1 << 8) | byte0 : (byte0 << 8) | byte1;
+}
+
+/**
+ * バイト列の offset 位置から16ビットグレー値を読み取ります。
+ * 範囲外のバイトは 0 として扱います（チャンク終端の安全策）。
+ *
+ * この関数は Webview にも `.toString()` で埋め込まれます（webviewHtml.ts）。
+ */
+export function readGray16Sample(
+  source: Uint8Array,
+  offset: number,
+  littleEndian: boolean
+): number {
+  return combineGray16Bytes(source[offset] ?? 0, source[offset + 1] ?? 0, littleEndian);
+}
+
+/**
  * ストリーミングデコードの初期状態を作ります。
  * デコードを始める前に一度だけ呼び出します。
  */
@@ -86,16 +114,12 @@ export function decodeRawPixel(
     case 'gray16le': {
       // リトルエンディアン: 低バイトが先、高バイトが後
       // 上位8ビットを表示値として使う（>> 8 で右シフト）
-      const lowByte = source[offset] ?? 0;
-      const highByte = source[offset + 1] ?? 0;
-      const value = ((highByte << 8) | lowByte) >> 8;
+      const value = readGray16Sample(source, offset, true) >> 8;
       return [value, value, value, 255];
     }
     case 'gray16be': {
       // ビッグエンディアン: 高バイトが先、低バイトが後
-      const highByte = source[offset] ?? 0;
-      const lowByte = source[offset + 1] ?? 0;
-      const value = ((highByte << 8) | lowByte) >> 8;
+      const value = readGray16Sample(source, offset, false) >> 8;
       return [value, value, value, 255];
     }
     case 'rgb24':
@@ -264,13 +288,13 @@ export function appendGrayChunk(state: GrayDecodeState, chunk: Uint8Array): void
     if (state.hasPendingByte && offset < chunk.length && state.pixelsWritten < state.totalPixels) {
       const b0 = state.pendingByte;
       const b1 = chunk[offset++];
-      writeGrayPixel(isLittleEndian ? (b1 << 8) | b0 : (b0 << 8) | b1);
+      writeGrayPixel(combineGray16Bytes(b0, b1, isLittleEndian));
       state.hasPendingByte = false;
     }
     while (offset + 2 <= chunk.length && state.pixelsWritten < state.totalPixels) {
       const b0 = chunk[offset++];
       const b1 = chunk[offset++];
-      writeGrayPixel(isLittleEndian ? (b1 << 8) | b0 : (b0 << 8) | b1);
+      writeGrayPixel(combineGray16Bytes(b0, b1, isLittleEndian));
     }
     if (offset < chunk.length && state.pixelsWritten < state.totalPixels) {
       state.pendingByte = chunk[offset];
@@ -465,27 +489,20 @@ export function decodeRawImageToRgba(
 
     case 'gray16le':
     case 'depth16':
-      // gray16le と同じ構造（リトルエンディアン16ビット）
+    case 'gray16be': {
+      // 16ビットグレー系はエンディアンだけが異なる（depth16 は gray16le と同じ構造）。
+      // バイト結合はストリーミング経路と共有の readGray16Sample() に委譲する。
+      const littleEndian = format !== 'gray16be';
       for (
         let p = 0, srcIdx = 0;
         p < totalPixels && srcIdx + 1 < pixelData.length;
         p++, srcIdx += 2
       ) {
-        const value = ((pixelData[srcIdx + 1] << 8) | pixelData[srcIdx]) >> 8;
+        const value = readGray16Sample(pixelData, srcIdx, littleEndian) >> 8;
         writePixel(p, value, value, value);
       }
       return pixels;
-
-    case 'gray16be':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 1 < pixelData.length;
-        p++, srcIdx += 2
-      ) {
-        const value = ((pixelData[srcIdx] << 8) | pixelData[srcIdx + 1]) >> 8;
-        writePixel(p, value, value, value);
-      }
-      return pixels;
+    }
 
     case 'rgb24':
       for (
