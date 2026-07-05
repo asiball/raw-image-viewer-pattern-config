@@ -689,6 +689,22 @@ suite('Extension Test Suite', () => {
     });
   });
 
+  test('parseRawImageConfig ignores patterns when target is outside the config directory', () => {
+    // 対象ファイルが configDir の外側（相対パスが ".." 始まり）にある場合、
+    // "**" のような広いパターンでも誤ってマッチしてはならない。
+    // Windows のクロスドライブ（path.relative が絶対パスを返す）も同じガードで防ぐ。
+    const config = { patterns: { '**': { width: 100, height: 100 } } };
+    const configPath =
+      process.platform === 'win32' ? 'C:\\repo\\sub\\.rawimagerc' : '/repo/sub/.rawimagerc';
+    const outsideFile = process.platform === 'win32' ? 'C:\\repo\\other.raw' : '/repo/other.raw';
+
+    // どのパターンにもマッチしない → width が未解決でエラーになる
+    assert.throws(
+      () => parseRawImageConfig(JSON.stringify(config), configPath, outsideFile),
+      /"width" must be a positive integer/
+    );
+  });
+
   test('parseRawImageConfig respects source order for integer-like keys (last-wins)', () => {
     // 整数風キー（"12"）を "*" より後に記述した場合、記述順どおり "12" が勝つこと。
     // JSON.stringify したオブジェクトでは JS が "12" を先頭に並べ替えてしまうため、

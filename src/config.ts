@@ -379,6 +379,15 @@ export function parseRawImageConfig(
   // グロブマッチに使う（スラッシュで統一して OS 差異を吸収）
   const configDir = path.dirname(configPath);
   let relativePath = path.relative(configDir, targetFilePath);
+  // Windows で configDir と対象ファイルが別ドライブにある場合、path.relative は
+  // 相対パスではなく絶対パス（例: "D:\\foo\\bar"）を返す。また対象ファイルが
+  // configDir の外側にある場合は ".." で始まる相対パスになる。いずれも
+  // configDir 起点の相対グロブパターンとは意味のある照合ができないため、
+  // どのパターンにもマッチしない扱いとする（誤マッチや意図しない設定適用を防ぐ）。
+  const isOutsideConfigDir =
+    path.isAbsolute(relativePath) ||
+    relativePath === '..' ||
+    relativePath.startsWith('..' + path.sep);
   relativePath = relativePath.split(path.sep).join('/');
 
   // マッチしたすべてのパターンの設定を順番にマージする（後のパターンが勝つ）
@@ -389,7 +398,7 @@ export function parseRawImageConfig(
     format?: RawImageFormat;
   } = {};
 
-  if (parsed.patterns) {
+  if (parsed.patterns && !isOutsideConfigDir) {
     const patterns = parsed.patterns;
     // Object.keys はドキュメント仕様（ファイル記述順で後勝ち）に反して
     // 整数風キーを先頭へ並べ替えるため、生テキストから求めたソース順を優先する
