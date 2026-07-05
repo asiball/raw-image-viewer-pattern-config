@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as vm from 'vm';
 
 // You can import and use all API from the 'vscode' module
 // as well as import your extension to test it
@@ -37,6 +38,9 @@ import {
   getLocalResourceRoots,
   getSuggestedPngSaveUri,
 } from '../extension';
+
+// Webview HTML/JS 生成は webviewHtml.ts から
+import { buildWebviewHtml } from '../webviewHtml';
 
 suite('Extension Test Suite', () => {
   vscode.window.showInformationMessage('Start all tests.');
@@ -690,5 +694,155 @@ suite('Extension Test Suite', () => {
       schemaFormats.length,
       'enumDescriptions count must match enum count'
     );
+  });
+
+  // buildWebviewHtml() が生成する <script nonce="..."> の中身を Node の vm モジュールで
+  // 実際に実行し、構文エラーやハンドラ内の未定義参照（例: renderImage 呼び出しの
+  // ReferenceError）が起きないことを検証するスモークテスト。
+  suite('Webview script smoke test', () => {
+    function extractWebviewScript(): string {
+      const html = buildWebviewHtml('https://example.com');
+      const match = html.match(/<script nonce="[^"]*">([\s\S]*?)<\/script>/);
+      assert.ok(match, 'expected a nonce script tag in the generated webview HTML');
+      return match![1];
+    }
+
+    // document.getElementById('root') / createElement() が返す最小の要素スタブ。
+    function createElementStub(): Record<string, unknown> {
+      const el: Record<string, unknown> = {
+        className: '',
+        innerHTML: '',
+        textContent: '',
+        style: {},
+        children: [] as unknown[],
+        appendChild(child: unknown) {
+          (el.children as unknown[]).push(child);
+          return child;
+        },
+        addEventListener() {
+          /* no-op */
+        },
+        removeEventListener() {
+          /* no-op */
+        },
+        setAttribute() {
+          /* no-op */
+        },
+        getAttribute() {
+          return null;
+        },
+      };
+      return el;
+    }
+
+    function runWebviewScript(): {
+      dispatchMessage: (data: unknown) => void;
+      root: Record<string, unknown>;
+      postedMessages: unknown[];
+    } {
+      const script = extractWebviewScript();
+      const root = createElementStub();
+      const messageListeners: Array<(event: { data: unknown }) => void> = [];
+      const postedMessages: unknown[] = [];
+
+      const windowStub = {
+        addEventListener(type: string, handler: (event: { data: unknown }) => void) {
+          if (type === 'message') {
+            messageListeners.push(handler);
+          }
+        },
+        removeEventListener() {
+          /* no-op */
+        },
+      };
+
+      const documentStub = {
+        getElementById(id: string) {
+          return id === 'root' ? root : null;
+        },
+        createElement() {
+          return createElementStub();
+        },
+      };
+
+      const context: Record<string, unknown> = {
+        window: windowStub,
+        document: documentStub,
+        acquireVsCodeApi() {
+          return {
+            postMessage(msg: unknown) {
+              postedMessages.push(msg);
+            },
+          };
+        },
+        setInterval() {
+          return 1;
+        },
+        clearInterval() {
+          /* no-op */
+        },
+        setTimeout() {
+          return 1;
+        },
+        clearTimeout() {
+          /* no-op */
+        },
+        ResizeObserver: function ResizeObserverStub() {
+          return { observe() {}, disconnect() {} };
+        },
+        fetch() {
+          return Promise.reject(new Error('fetch should not be reached in this smoke test'));
+        },
+        AbortController: function AbortControllerStub() {
+          return { abort() {}, signal: {} };
+        },
+        console,
+      };
+      vm.createContext(context);
+
+      // 構文エラー（例: 修正① 以前の未定義 renderImage() によるブレース崩れ）が
+      // あればここで例外が発生する。
+      vm.runInContext(script, context);
+
+      assert.strictEqual(messageListeners.length, 1, 'expected exactly one message listener');
+
+      return {
+        dispatchMessage: (data: unknown) => messageListeners[0]({ data }),
+        root,
+        postedMessages,
+      };
+    }
+
+    test('render message with no config does not throw and shows the no-config guide', () => {
+      const { dispatchMessage, root } = runWebviewScript();
+
+      assert.doesNotThrow(() => {
+        dispatchMessage({
+          type: 'render',
+          config: null,
+          configSource: 'settings',
+          fileUri: 'x',
+          fileSize: 0,
+        });
+      });
+
+      assert.ok(
+        String(root.innerHTML).includes('No .rawimagerc'),
+        'expected the no-config guide to be rendered'
+      );
+    });
+
+    test('error message does not throw and displays the error text', () => {
+      const { dispatchMessage, root } = runWebviewScript();
+
+      assert.doesNotThrow(() => {
+        dispatchMessage({ type: 'error', message: 'boom' });
+      });
+
+      assert.ok(
+        String(root.innerHTML).includes('boom'),
+        'expected the error message to be rendered'
+      );
+    });
   });
 });
