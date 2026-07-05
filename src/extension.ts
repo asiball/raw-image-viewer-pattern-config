@@ -115,6 +115,9 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
     webviewPanel: vscode.WebviewPanel,
     _token: vscode.CancellationToken
   ): Promise<void> {
+    // 拡張機能自体の URI（out/webview/main.js の解決に使う）
+    const extensionUri = this._context.extensionUri;
+
     // 最初に .rawimagerc を探す（後でリフレッシュのたびに再探索する）
     let currentConfigPath = findConfigPath(document.uri.fsPath);
 
@@ -125,7 +128,7 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
     const updateWebviewOptions = (): void => {
       webviewPanel.webview.options = {
         enableScripts: true,
-        localResourceRoots: getLocalResourceRoots(document.uri, currentConfigPath),
+        localResourceRoots: getLocalResourceRoots(document.uri, extensionUri, currentConfigPath),
       };
     };
 
@@ -283,7 +286,12 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
     }
 
     // Webview の HTML をセットする（webviewHtml.ts が生成する）
-    webviewPanel.webview.html = buildWebviewHtml(webviewPanel.webview.cspSource);
+    // レンダリングロジック本体は out/webview/main.js（esbuild バンドル）として
+    // 別アセットから読み込むため、Webview URI に変換して渡す。
+    const scriptUri = webviewPanel.webview
+      .asWebviewUri(vscode.Uri.joinPath(extensionUri, 'out', 'webview', 'main.js'))
+      .toString();
+    webviewPanel.webview.html = buildWebviewHtml(webviewPanel.webview.cspSource, scriptUri);
 
     // パネルが閉じられたときのクリーンアップ処理
     webviewPanel.onDidDispose(() => {
@@ -380,15 +388,22 @@ export function createInitialRenderHandshake(
  *
  * VS Code のセキュリティ制限により、Webview は `localResourceRoots` に
  * 含まれるディレクトリのファイルしか読み込めません。
- * .rawimagerc が別ディレクトリにあるときは最大2ディレクトリになります。
+ * .rawimagerc が別ディレクトリにあるときと、拡張機能の out/webview
+ * ディレクトリ（バンドル済み main.js を読み込むため常に必要）を合わせて
+ * 最大3ディレクトリになります。
  *
  * `Map` を使っているのは、同じディレクトリが重複して入らないようにするため。
  * Windows では大文字小文字を区別しないパス比較のためにキーを小文字化します。
  *
  * @param documentUri  開いたファイルの URI
+ * @param extensionUri 拡張機能自体の URI（out/webview ディレクトリの解決に使う）
  * @param configPath   .rawimagerc のパス（なければ undefined）
  */
-export function getLocalResourceRoots(documentUri: vscode.Uri, configPath?: string): vscode.Uri[] {
+export function getLocalResourceRoots(
+  documentUri: vscode.Uri,
+  extensionUri: vscode.Uri,
+  configPath?: string
+): vscode.Uri[] {
   const roots = new Map<string, vscode.Uri>();
   const addRoot = (fsPath: string): void => {
     const uri = vscode.Uri.file(fsPath);
@@ -400,6 +415,7 @@ export function getLocalResourceRoots(documentUri: vscode.Uri, configPath?: stri
   if (configPath) {
     addRoot(path.dirname(configPath));
   }
+  addRoot(path.join(extensionUri.fsPath, 'out', 'webview'));
 
   return [...roots.values()];
 }

@@ -13,12 +13,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ### Changed
 
 - Webview styling now uses VS Code theme variables for better light/dark/high-contrast support; added focus-visible outlines and tooltips to the viewer toolbar buttons
+- **Webview is now TypeScript**: the ~54KB of inline JavaScript previously embedded as a string template in `webviewHtml.ts` (with `decoder.ts` functions injected via `.toString()`) has been moved to `src/webview/main.ts`, which imports `decoder.ts`/`types.ts` directly and is type-checked (`tsconfig.webview.json`) and linted like the rest of the codebase. It's bundled with esbuild into `out/webview/main.js` and loaded via a nonce-scoped `<script src="...">` tag; the CSP still allows only nonce-scoped scripts
 
 ### Fixed
 
 - Error boxes now expose `role="alert"` for screen readers, and the colormap selector has an accessible label
 - `rawviewer.createConfig` now overwrites an existing but empty `.rawimagerc` with the template instead of leaving it untouched
 - The `render` message handler called an undefined `renderImage()` function (introduced by a prior refactor), which meant no image was ever rendered and errors were silently swallowed; the inline rendering logic now runs correctly
+- The pan (drag) `mousemove`/`mouseup` listeners registered on `window` were never removed on re-render, so reopening or refreshing an image repeatedly leaked one pair of listeners per render; they are now cleared at the start of each render
 
 ## [0.1.0] - 2026-04-27
 

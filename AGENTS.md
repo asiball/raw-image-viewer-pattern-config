@@ -3,30 +3,33 @@
 ## ビルド・Lint・テスト
 
 ```bash
-npm run compile      # TypeScript コンパイル (tsc)
-npm run lint         # ESLint（src/ 対象）
-npm run watch        # TypeScript ウォッチモード
+npm run compile      # 3 段階: tsc -p ./（拡張本体） → tsc -p tsconfig.webview.json（Webview の型検査のみ、emit なし） → esbuild で src/webview/main.ts を out/webview/main.js にバンドル
+npm run lint         # ESLint（src/ 配下すべてが対象。src/webview も含む）
+npm run watch        # TypeScript ウォッチモード（拡張本体のみ。tsc -watch -p ./）
 npm test             # フルスイート: compile + lint + vscode-test（Electron 必須）
 ```
 
 テストを単独で実行する方法はない。テストランナー（`@vscode/test-cli`）は `out/test/**/*.test.js` に一致するファイルをすべて実行する。提出前に必ず `npm run lint && npm run compile` を実行すること。
 
+**Webview（`src/webview/` 以下）を変更した場合、`npm run watch` だけでは `out/webview/main.js` は再生成されない。** 必ず `npm run compile` を実行してバンドルを更新すること。
+
 ## アーキテクチャ
 
-外部ランタイム依存なしの VS Code 拡張。`src/` 配下は役割ごとに 5 モジュールへ分割されている。
+外部ランタイム依存なしの VS Code 拡張。`src/` 配下は役割ごとに分割されている。
 
 - `extension.ts` — VS Code 統合層。`RawImageEditorProvider` の実装、コマンド登録、設定探索・Webview 生成の呼び出しなど拡張のエントリポイント。
 - `config.ts` — `.rawimagerc` の探索（`findConfigPath()`）・パース・検証、ファイル名からの推論、ワークスペース設定へのフォールバックなど設定解決ロジック。
-- `decoder.ts` — 各ピクセルフォーマットのデコード処理（ストリーミングデコード状態管理、YUV/グレースケール/Float32 変換、ウィンドウ/レベル適用など）。Webview 側にも `.toString()` で文字列化して埋め込まれ、同じロジックを共有する。
-- `webviewHtml.ts` — Webview の HTML/CSS/JS を生成する（`buildWebviewHtml()` / `getWebviewHtml()`）。
+- `decoder.ts` — 各ピクセルフォーマットのデコード処理（ストリーミングデコード状態管理、YUV/グレースケール/Float32 変換、ウィンドウ/レベル適用など）。`src/webview/main.ts` からも ES import で直接呼び出され、Extension 側（Node）と Webview 側（ブラウザ）で同一実装を共有する。
+- `webviewHtml.ts` — Webview の HTML シェル（CSS を含む）を生成する（`buildWebviewHtml()` / `getWebviewHtml()`）。レンダリングロジック本体は持たず、`out/webview/main.js` を nonce 付き `<script src="...">` で読み込むだけ。
+- `webview/main.ts` — Webview 内で実行される TypeScript 本体（旧 `webviewHtml.ts` のインライン JS に相当）。`decoder.ts` / `types.ts` を ES import で共有し、tsc（`tsconfig.webview.json`、DOM lib 付き）による型検査と ESLint の対象。esbuild で `out/webview/main.js` に IIFE 形式でバンドルされる。
 - `types.ts` — 設定・フォーマット関連の型定義と定数。
 
 **データフロー:**
 
 1. `RawImageEditorProvider`（`CustomReadonlyEditorProvider` 実装、`extension.ts`）がファイルを開き、`WebviewPanel` を作成する。
-2. Webview の HTML（レンダリングロジックを含む）は `webviewHtml.ts` の `getWebviewHtml()` がテンプレート文字列としてインラインで生成する。HTML/CSS/JS の独立したアセットファイルは存在しない。
+2. Webview の HTML シェルは `webviewHtml.ts` の `getWebviewHtml()` が生成する。レンダリングロジックは独立したアセットファイル `out/webview/main.js`（`src/webview/main.ts` を esbuild でバンドルしたもの）として、nonce 付き `<script src="...">` から読み込まれる。
 3. Extension が `config.ts` の `findConfigPath()` で `.rawimagerc` を探し（ファイル位置から上位ディレクトリへ `.editorconfig` 方式で探索）、`postMessage` で `render` メッセージを Webview へ送信する。
-4. Webview は VS Code の Webview URI に対して `fetch()` でバイナリファイルを読み込み、設定で指定されたフォーマットに従って HTML5 `<canvas>` にピクセルを描画する（デコードロジックは `decoder.ts` 由来）。
+4. Webview は VS Code の Webview URI に対して `fetch()` でバイナリファイルを読み込み、設定で指定されたフォーマットに従って HTML5 `<canvas>` にピクセルを描画する（デコードロジックは `decoder.ts` 由来、ES import で共有）。
 
 **メッセージプロトコル（Extension ↔ Webview）:**
 
@@ -49,12 +52,12 @@ npm test             # フルスイート: compile + lint + vscode-test（Electr
 
 ## 主要な規約
 
-- **Webview JS は意図的にバニラ JavaScript**（TypeScript ではない）。`webviewHtml.ts` の `getWebviewHtml()` 内の文字列として存在し、残りのコードベースと一緒にコンパイル・Lint できない。
-- **CSP は厳格:** `script-src 'nonce-...'` のみ。インラインスクリプトはすべて nonce を使用すること。外部スクリプトは不可。
-- **`localResourceRoots`** は開いたファイルのあるディレクトリを常に含む。設定ファイル（`.rawimagerc`）が別ディレクトリで見つかった場合はそのディレクトリも追加され、最大 2 ディレクトリになる。
-- TypeScript の **strict モード**が有効。`tsc` でクリーンにコンパイルできること。
-- ESLint が適用するルール: `curly`、`eqeqeq`、`semi`、`no-throw-literal`、`@typescript-eslint/naming-convention`（import は camelCase または PascalCase）。
-- サポートするピクセルフォーマットは `webviewHtml.ts` の `getWebviewHtml()` 内の Webview の switch 文で完全に定義される。新しいフォーマットを追加するには、switch 文と設定未検出時に表示されるヘルプテーブルの両方を更新する必要がある。
+- **Webview のロジックは `src/webview/main.ts` に TypeScript として実装されている。** `decoder.ts` / `types.ts` を ES import で直接共有し、`tsconfig.webview.json` による型検査と `eslint src` による Lint の対象になる（旧来の `.toString()` 埋め込みやバニラ JS 文字列テンプレートは廃止済み）。esbuild で `out/webview/main.js` に IIFE 形式でバンドルされ、`webviewHtml.ts` が生成する HTML から nonce 付き `<script src="...">` で読み込まれる。
+- **CSP は厳格:** `script-src 'nonce-...'` のみ。`out/webview/main.js` を読み込む `<script>` タグにも nonce を付与すること（外部ファイルであっても nonce があれば CSP 上許可される。ソース URL 自体を許可リスト化するものではない）。
+- **`localResourceRoots`** は開いたファイルのあるディレクトリと、拡張機能の `out/webview` ディレクトリ（バンドル済み `main.js` を Webview から読み込むため）を常に含む。設定ファイル（`.rawimagerc`）が別ディレクトリで見つかった場合はそのディレクトリも追加され、最大 3 ディレクトリになる。
+- TypeScript の **strict モード**が有効。`tsc -p ./` と `tsc -p tsconfig.webview.json` の両方でクリーンにコンパイルできること。
+- ESLint が適用するルール: `curly`、`eqeqeq`、`semi`、`no-throw-literal`、`@typescript-eslint/naming-convention`（import は camelCase または PascalCase）。`src/webview` も対象。
+- サポートするピクセルフォーマットは `decoder.ts` の `decodeRawImageToRgba()` 内の switch 文で完全に定義される。新しいフォーマットを追加するには、その switch 文と `src/webview/main.ts` 内の「設定未検出時のヘルプテーブル」の両方を更新する必要がある。
 
 ## GitHub Issues・PR の確認
 

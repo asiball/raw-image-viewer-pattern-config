@@ -119,13 +119,18 @@ suite('Extension Test Suite', () => {
     );
   });
 
-  test('getLocalResourceRoots includes config ancestor', () => {
+  test('getLocalResourceRoots includes config ancestor and extension webview dir', () => {
     const isWindows = process.platform === 'win32';
     const filePath = isWindows
       ? 'D:\\repo\\images\\nested\\frame.raw'
       : '/repo/images/nested/frame.raw';
     const configPath = isWindows ? 'D:\\repo\\images\\.rawimagerc' : '/repo/images/.rawimagerc';
-    const roots = getLocalResourceRoots(vscode.Uri.file(filePath), configPath);
+    const extensionPath = isWindows ? 'D:\\ext' : '/ext';
+    const roots = getLocalResourceRoots(
+      vscode.Uri.file(filePath),
+      vscode.Uri.file(extensionPath),
+      configPath
+    );
 
     assert.deepStrictEqual(
       roots.map((root) => path.normalize(root.fsPath).toLowerCase()),
@@ -134,6 +139,7 @@ suite('Extension Test Suite', () => {
           .normalize(isWindows ? 'D:\\repo\\images\\nested' : '/repo/images/nested')
           .toLowerCase(),
         path.normalize(isWindows ? 'D:\\repo\\images' : '/repo/images').toLowerCase(),
+        path.normalize(isWindows ? 'D:\\ext\\out\\webview' : '/ext/out/webview').toLowerCase(),
       ]
     );
   });
@@ -1027,25 +1033,62 @@ suite('Extension Test Suite', () => {
     });
   });
 
-  // buildWebviewHtml() が生成する <script nonce="..."> の中身を Node の vm モジュールで
-  // 実際に実行し、構文エラーやハンドラ内の未定義参照（例: renderImage 呼び出しの
-  // ReferenceError）が起きないことを検証するスモークテスト。
-  suite('Webview script smoke test', () => {
-    function extractWebviewScript(): string {
-      const html = buildWebviewHtml('https://example.com');
-      const match = html.match(/<script nonce="[^"]*">([\s\S]*?)<\/script>/);
-      assert.ok(match, 'expected a nonce script tag in the generated webview HTML');
-      return match![1];
+  test('buildWebviewHtml emits a nonce script tag pointing at the given scriptUri', () => {
+    const html = buildWebviewHtml('https://example.com', 'https://example.com/out/webview/main.js');
+    const match = html.match(/<script nonce="([^"]+)" src="([^"]+)"><\/script>/);
+    assert.ok(match, 'expected a nonce+src script tag in the generated webview HTML');
+    assert.strictEqual(match![2], 'https://example.com/out/webview/main.js');
+    assert.ok(
+      html.includes(`script-src 'nonce-${match![1]}'`),
+      'expected the CSP script-src directive to reference the same nonce as the script tag'
+    );
+  });
+
+  // out/webview/main.js（esbuild が src/webview/main.ts をバンドルしたもの）を
+  // Node の vm モジュールで実際に実行し、構文エラーやハンドラ内の未定義参照が
+  // 起きないことを検証するスモークテスト。
+  //
+  // 以前は webviewHtml.ts の <script nonce="..."> インライン文字列から抽出した
+  // JS を実行していたが、レンダリングロジックが src/webview/main.ts (TypeScript)
+  // に移り esbuild でバンドルされるようになったため、実際に読み込まれる成果物
+  // である out/webview/main.js を直接検証する。
+  //
+  // 旧テスト「embedded gray16 decode paths run in the webview script without
+  // ReferenceError」は削除した。これは decoder.ts を `.toString()` で文字列化して
+  // 埋め込む際の「埋め込み漏れ」を検出するためのテストだったが、現在は ES import +
+  // esbuild バンドルに置き換わり、埋め込み漏れという失敗モード自体が構造的に
+  // 存在しない（import が壊れていれば tsc/esbuild がビルド時に失敗する）。
+  // decoder.ts の各関数（appendGrayChunk / decodeRawImageToRgba 等）は本ファイル
+  // 上部で既に直接 import してテスト済みのため、重複したカバレッジも解消される。
+  suite('Webview bundle smoke test', () => {
+    function readWebviewBundle(): string {
+      const bundlePath = path.join(__dirname, '..', 'webview', 'main.js');
+      assert.ok(
+        fs.existsSync(bundlePath),
+        `expected esbuild bundle at ${bundlePath}; run "npm run compile" first`
+      );
+      return fs.readFileSync(bundlePath, 'utf8');
     }
 
     // document.getElementById('root') / createElement() が返す最小の要素スタブ。
-    function createElementStub(): Record<string, unknown> {
+    function createElementStub(tag?: string): Record<string, unknown> {
       const el: Record<string, unknown> = {
         className: '',
         innerHTML: '',
         textContent: '',
         style: {},
         children: [] as unknown[],
+        classList: {
+          add() {
+            /* no-op */
+          },
+          remove() {
+            /* no-op */
+          },
+          contains() {
+            return false;
+          },
+        },
         appendChild(child: unknown) {
           (el.children as unknown[]).push(child);
           return child;
@@ -1062,28 +1105,52 @@ suite('Extension Test Suite', () => {
         getAttribute() {
           return null;
         },
+        getBoundingClientRect() {
+          return { left: 0, top: 0, width: 1, height: 1 };
+        },
       };
+      if (tag === 'canvas') {
+        el.width = 0;
+        el.height = 0;
+        el.getContext = (type: string) => {
+          if (type !== '2d') {
+            return null;
+          }
+          return {
+            createImageData(w: number, h: number) {
+              return { width: w, height: h, data: new Uint8ClampedArray(w * h * 4) };
+            },
+            putImageData() {
+              /* no-op */
+            },
+          };
+        };
+        el.toDataURL = () => 'data:image/png;base64,';
+      }
       return el;
     }
 
-    function createWebviewVmContext(): {
+    function createWebviewVmContext(fetchImpl?: (...args: unknown[]) => Promise<unknown>): {
       context: Record<string, unknown>;
       root: Record<string, unknown>;
       messageListeners: Array<(event: { data: unknown }) => void>;
       postedMessages: unknown[];
+      windowListenerCounts: Record<string, number>;
     } {
       const root = createElementStub();
       const messageListeners: Array<(event: { data: unknown }) => void> = [];
       const postedMessages: unknown[] = [];
+      const windowListenerCounts: Record<string, number> = {};
 
       const windowStub = {
         addEventListener(type: string, handler: (event: { data: unknown }) => void) {
           if (type === 'message') {
             messageListeners.push(handler);
           }
+          windowListenerCounts[type] = (windowListenerCounts[type] || 0) + 1;
         },
-        removeEventListener() {
-          /* no-op */
+        removeEventListener(type: string) {
+          windowListenerCounts[type] = (windowListenerCounts[type] || 0) - 1;
         },
       };
 
@@ -1091,8 +1158,11 @@ suite('Extension Test Suite', () => {
         getElementById(id: string) {
           return id === 'root' ? root : null;
         },
-        createElement() {
-          return createElementStub();
+        createElement(tag: string) {
+          return createElementStub(tag);
+        },
+        createTextNode(text: string) {
+          return { nodeType: 3, textContent: text };
         },
       };
 
@@ -1118,12 +1188,16 @@ suite('Extension Test Suite', () => {
         clearTimeout() {
           /* no-op */
         },
+        requestAnimationFrame(cb: () => void) {
+          cb();
+          return 1;
+        },
         ResizeObserver: function ResizeObserverStub() {
           return { observe() {}, disconnect() {} };
         },
-        fetch() {
-          return Promise.reject(new Error('fetch should not be reached in this smoke test'));
-        },
+        fetch:
+          fetchImpl ??
+          (() => Promise.reject(new Error('fetch should not be reached in this smoke test'))),
         AbortController: function AbortControllerStub() {
           return { abort() {}, signal: {} };
         },
@@ -1131,19 +1205,20 @@ suite('Extension Test Suite', () => {
       };
       vm.createContext(context);
 
-      return { context, root, messageListeners, postedMessages };
+      return { context, root, messageListeners, postedMessages, windowListenerCounts };
     }
 
-    function runWebviewScript(): {
+    function runWebviewScript(fetchImpl?: (...args: unknown[]) => Promise<unknown>): {
       dispatchMessage: (data: unknown) => void;
       root: Record<string, unknown>;
       postedMessages: unknown[];
+      windowListenerCounts: Record<string, number>;
     } {
-      const script = extractWebviewScript();
-      const { context, root, messageListeners, postedMessages } = createWebviewVmContext();
+      const script = readWebviewBundle();
+      const { context, root, messageListeners, postedMessages, windowListenerCounts } =
+        createWebviewVmContext(fetchImpl);
 
-      // 構文エラー（例: 修正① 以前の未定義 renderImage() によるブレース崩れ）が
-      // あればここで例外が発生する。
+      // 構文エラーやハンドラ内の未定義参照があればここで例外が発生する。
       vm.runInContext(script, context);
 
       assert.strictEqual(messageListeners.length, 1, 'expected exactly one message listener');
@@ -1152,6 +1227,7 @@ suite('Extension Test Suite', () => {
         dispatchMessage: (data: unknown) => messageListeners[0]({ data }),
         root,
         postedMessages,
+        windowListenerCounts,
       };
     }
 
@@ -1187,58 +1263,53 @@ suite('Extension Test Suite', () => {
       );
     });
 
-    test('embedded gray16 decode paths run in the webview script without ReferenceError', () => {
-      // decoder.ts の関数が共有ヘルパー（combineGray16Bytes / readGray16Sample）に
-      // 依存するようになったため、ヘルパーの埋め込み漏れがあると Webview 側で
-      // 実行時 ReferenceError になる。埋め込まれた関数を vm 内で実際に呼び出して
-      // デコード経路が最後まで動くことを検証する。
-      const script = extractWebviewScript();
-      const { context } = createWebviewVmContext();
+    test('render does not accumulate window mousemove/mouseup listeners across repeated renders', async () => {
+      // 修正: パン操作用の window リスナー（mousemove/mouseup）は、以前は render
+      // のたびに新規登録されるだけで解除されず、リスナーリークになっていた
+      // （再描画のたびに登録数が増え続ける）。1x1 gray8 画像を成功パスで2回連続
+      // レンダリングし、正味の登録数が 1 のまま増えないことを検証する。
+      const fetchStub = () =>
+        Promise.resolve({
+          ok: true,
+          body: null,
+          arrayBuffer: () => Promise.resolve(new Uint8Array([128]).buffer),
+        });
 
-      // decodeRawImageToRgba はスクリプト内の const のため、同一スクリプトの
-      // 末尾でグローバルへ公開してから別スクリプトで呼び出す。
-      vm.runInContext(
-        script + '\n;globalThis.__decodeRawImageToRgba = decodeRawImageToRgba;',
-        context
-      );
+      const { dispatchMessage, windowListenerCounts } = runWebviewScript(fetchStub as never);
 
-      // 結果はクロス realm のプロトタイプ差異を避けるため JSON 文字列で受け取る
-      const resultJson = vm.runInContext(
-        `(function () {
-          var bytes = new Uint8Array([0x34, 0x12, 0xcd, 0xab]);
-          var batchLe = Array.from(__decodeRawImageToRgba(bytes, 2, 1, 'gray16le'));
-          var batchBe = Array.from(__decodeRawImageToRgba(bytes, 2, 1, 'gray16be'));
-          var batchDepth = Array.from(__decodeRawImageToRgba(bytes, 2, 1, 'depth16'));
-          var pixels = new Uint8ClampedArray(8);
-          var st = createRawImageDecodeState(2, 1, 0, 'gray16le');
-          appendRawImageChunk(st, bytes, pixels);
-          var stream = Array.from(pixels);
-          var gs = createGrayDecodeState(2, 1, 0, 'depth16');
-          appendGrayChunk(gs, bytes);
-          var gray = Array.from(gs.rawGray);
-          return JSON.stringify({
-            batchLe: batchLe,
-            batchBe: batchBe,
-            batchDepth: batchDepth,
-            stream: stream,
-            gray: gray,
-          });
-        })()`,
-        context
-      ) as string;
-      const result = JSON.parse(resultJson) as {
-        batchLe: number[];
-        batchBe: number[];
-        batchDepth: number[];
-        stream: number[];
-        gray: number[];
+      const renderMessage = {
+        type: 'render',
+        config: { width: 1, height: 1, headerSize: 0, format: 'gray8' },
+        configSource: 'rawimagerc',
+        fileUri: 'x',
+        fileSize: 1,
       };
 
-      assert.deepStrictEqual(result.batchLe, [0x12, 0x12, 0x12, 255, 0xab, 0xab, 0xab, 255]);
-      assert.deepStrictEqual(result.batchBe, [0x34, 0x34, 0x34, 255, 0xcd, 0xcd, 0xcd, 255]);
-      assert.deepStrictEqual(result.batchDepth, result.batchLe);
-      assert.deepStrictEqual(result.stream, result.batchLe);
-      assert.deepStrictEqual(result.gray, [0x1234, 0xabcd]);
+      dispatchMessage(renderMessage);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(
+        windowListenerCounts.mousemove,
+        1,
+        'expected exactly one mousemove listener after the first render'
+      );
+      assert.strictEqual(
+        windowListenerCounts.mouseup,
+        1,
+        'expected exactly one mouseup listener after the first render'
+      );
+
+      dispatchMessage(renderMessage);
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(
+        windowListenerCounts.mousemove,
+        1,
+        'mousemove listeners must not accumulate across renders'
+      );
+      assert.strictEqual(
+        windowListenerCounts.mouseup,
+        1,
+        'mouseup listeners must not accumulate across renders'
+      );
     });
   });
 });

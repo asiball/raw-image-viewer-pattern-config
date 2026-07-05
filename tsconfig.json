@@ -12,5 +12,8 @@
     // "noImplicitReturns": true, /* Report error when not all code paths in function return a value. */
     // "noFallthroughCasesInSwitch": true, /* Report errors for fallthrough cases in switch statement. */
     // "noUnusedParameters": true,  /* Report errors on unused parameters. */
-  }
+  },
+  // src/webview は DOM lib 前提の Webview 専用コードのため、拡張本体のコンパイルからは除外する。
+  // 型検査は tsconfig.webview.json で別途行う（npm run compile の一部）。
+  "exclude": ["src/webview"]
 }
