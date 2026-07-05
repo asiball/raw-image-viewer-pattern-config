@@ -423,14 +423,12 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                 lastFileSize = msg.fileSize;
                 currentColormap = 'Grayscale';
                 currentColormapLut = null;
-                renderImage();
-            var root = document.getElementById('root');
-            var config = lastConfig;
-            var configSource = lastConfigSource;
-            var fileUri = lastFileUri;
-            var fileSize = lastFileSize;
+                var config = lastConfig;
+                var configSource = lastConfigSource;
+                var fileUri = lastFileUri;
+                var fileSize = lastFileSize;
 
-            if (!config) {
+                if (!config) {
                     root.className = 'center';
                     root.innerHTML =
                         '<div class="no-config-box">' +
@@ -970,7 +968,8 @@ export function getWebviewHtml(nonce: string, cspSource: string): string {
                         root.className = 'center';
                         root.innerHTML = '<div class="error-box" role="alert"><strong>Error:</strong> ' + escapeHtml(String(err)) + '</div>';
                     });
-        }
+            }
+        });
 
         // --- エラーハンドラ ---
 
