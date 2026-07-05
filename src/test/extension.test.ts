@@ -38,6 +38,7 @@ import {
   decodePngDataUrl,
   getLocalResourceRoots,
   getSuggestedPngSaveUri,
+  parseWebviewMessage,
 } from '../extension';
 
 // Webview HTML/JS 生成は webviewHtml.ts から
@@ -223,6 +224,19 @@ suite('Extension Test Suite', () => {
 
   test('decodePngDataUrl rejects invalid payloads', () => {
     assert.throws(() => decodePngDataUrl('not-a-data-url'), /Invalid PNG data/);
+  });
+
+  test('parseWebviewMessage narrows valid messages and rejects malformed ones', () => {
+    assert.deepStrictEqual(parseWebviewMessage({ type: 'ready' }), { type: 'ready' });
+    assert.deepStrictEqual(
+      parseWebviewMessage({ type: 'savePng', dataUrl: 'data:image/png;base64,AQID' }),
+      { type: 'savePng', dataUrl: 'data:image/png;base64,AQID' }
+    );
+    assert.strictEqual(parseWebviewMessage({ type: 'savePng' }), undefined);
+    assert.strictEqual(parseWebviewMessage({ type: 'savePng', dataUrl: 42 }), undefined);
+    assert.strictEqual(parseWebviewMessage({ type: 'unknown' }), undefined);
+    assert.strictEqual(parseWebviewMessage(null), undefined);
+    assert.strictEqual(parseWebviewMessage('ready'), undefined);
   });
 
   test('getBytesPerPixel matches supported stream formats', () => {

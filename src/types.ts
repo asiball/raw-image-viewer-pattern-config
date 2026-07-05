@@ -128,6 +128,36 @@ export interface ResolvedRawImageConfig {
 }
 
 // =============================================================================
+// Extension ↔ Webview メッセージプロトコル
+// =============================================================================
+
+/**
+ * Webview → Extension へ送られるメッセージの判別可能 union。
+ * - `ready`   : Webview の初期化完了通知（acknowledgement を受け取るまで繰り返し送信）
+ * - `savePng` : 現在表示中イメージの PNG 保存要求（canvas.toDataURL() の Data URL 付き）
+ */
+export type WebviewToExtensionMessage = { type: 'ready' } | { type: 'savePng'; dataUrl: string };
+
+/**
+ * Extension → Webview へ送られるメッセージの判別可能 union。
+ * - `render` : 描画指示（解決済み設定・取得元・ファイル URI・ファイルサイズ）
+ * - `error`  : エラー内容通知
+ */
+export type ExtensionToWebviewMessage =
+  | {
+      type: 'render';
+      /** 解決済み設定。設定が見つからない場合は null（Webview はヘルプ画面を表示） */
+      config: RawImageConfig | null;
+      /** 設定の取得元。config が null の場合は null */
+      configSource: RawImageConfigSource | null;
+      /** Webview からアクセス可能な VS Code Webview URI（文字列化済み） */
+      fileUri: string;
+      /** ファイルサイズ（バイト） */
+      fileSize: number;
+    }
+  | { type: 'error'; message: string };
+
+// =============================================================================
 // タイマー関連（テストでモック差し替えができるよう型を定義）
 // =============================================================================
 
