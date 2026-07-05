@@ -167,11 +167,14 @@ sequenceDiagram
 
 - `yuv420p` と `nv12` は幅・高さが偶数である必要がある
 - `yuyv422` は幅が偶数である必要がある
-- Webview スクリプトは nonce 付き CSP 下で実行する
-- Webview の参照ルート (`localResourceRoots`) は、セキュリティのため以下のディレクトリに制限される。
+- Webview のレンダリングロジックは `src/webview/main.ts`（TypeScript）に実装され、esbuild で `out/webview/main.js` に IIFE 形式でバンドルされる。Webview の HTML（`webviewHtml.ts` 生成）はこのバンドルを nonce 付き `<script src="...">` タグで読み込むシェルであり、インライン JS は持たない
+- Webview スクリプトは nonce 付き CSP（`script-src 'nonce-...'`）下で実行する。外部ファイルとして読み込む `out/webview/main.js` の `<script>` タグにも同じ nonce を付与する（nonce があれば読み込み元の URL 自体は CSP 上制限されない）
+- Webview の参照ルート (`localResourceRoots`) は、セキュリティのため以下のディレクトリに制限される（最大 3 ディレクトリ）。
   - 表示中のファイルが存在するディレクトリ
   - `.rawimagerc` が別の親ディレクトリで見つかった場合は、そのディレクトリ
+  - 拡張機能の `out/webview` ディレクトリ（バンドル済み `main.js` を読み込むため）
 - Webview 内の `fetch()` は VS Code の Webview URI スキームを使用してファイルを読み込む。
+- Webview 側の `decoder.ts` 呼び出しは ES import による直接共有であり、Extension 側（Node）と Webview 側（ブラウザ、esbuild バンドル後）で同一のコンパイル済みロジックを実行する。
 
 ## 7. エラーハンドリング
 
