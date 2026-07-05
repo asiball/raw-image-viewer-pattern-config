@@ -22,6 +22,7 @@ import {
 
 // 設定関連の関数は config.ts から
 import {
+  extractPatternKeyOrder,
   getConfigSearchDirectories,
   inferRawImageConfigFromFilename,
   parseRawImageConfig,
@@ -670,6 +671,58 @@ suite('Extension Test Suite', () => {
       headerSize: 0,
       format: 'rgb24',
     });
+  });
+
+  test('parseRawImageConfig respects source order for integer-like keys (last-wins)', () => {
+    // 整数風キー（"12"）を "*" より後に記述した場合、記述順どおり "12" が勝つこと。
+    // JSON.stringify したオブジェクトでは JS が "12" を先頭に並べ替えてしまうため、
+    // 生テキストを直接組み立ててソース順を固定する。
+    const raw =
+      '{\n' +
+      '  "patterns": {\n' +
+      '    "*": { "width": 8, "height": 8, "format": "rgb24" },\n' +
+      '    "12": { "width": 8, "height": 8, "format": "gray8" }\n' +
+      '  }\n' +
+      '}';
+    const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
+    // 相対パスが "12" になり、"*" と "12" の両方に一致する
+    const target = process.platform === 'win32' ? 'C:\\repo\\12' : '/repo/12';
+
+    const result = parseRawImageConfig(raw, configPath, target);
+    assert.strictEqual(
+      result.format,
+      'gray8',
+      'later-in-source pattern ("12") must win over earlier "*"'
+    );
+
+    // 逆順（"12" が先、"*" が後）なら "*" が勝つ
+    const rawReversed =
+      '{\n' +
+      '  "patterns": {\n' +
+      '    "12": { "width": 8, "height": 8, "format": "gray8" },\n' +
+      '    "*": { "width": 8, "height": 8, "format": "rgb24" }\n' +
+      '  }\n' +
+      '}';
+    assert.strictEqual(parseRawImageConfig(rawReversed, configPath, target).format, 'rgb24');
+  });
+
+  test('extractPatternKeyOrder returns keys in source order handling braces and escapes', () => {
+    const raw =
+      '{\n' +
+      '  "patterns": {\n' +
+      '    "*": { "width": 8, "height": 8, "format": "rgb24" },\n' +
+      '    "**/a{b}/*.bin": { "width": 4, "height": 4 },\n' +
+      '    "esc\\"quote": { "width": 2, "height": 2 },\n' +
+      '    "12": { "width": 2, "height": 2 }\n' +
+      '  }\n' +
+      '}';
+    assert.deepStrictEqual(extractPatternKeyOrder(raw), ['*', '**/a{b}/*.bin', 'esc"quote', '12']);
+  });
+
+  test('extractPatternKeyOrder returns null when patterns block is absent or malformed', () => {
+    assert.strictEqual(extractPatternKeyOrder('{ "width": 8 }'), null);
+    assert.strictEqual(extractPatternKeyOrder('{ "patterns": [1, 2] }'), null);
+    assert.strictEqual(extractPatternKeyOrder('{ "patterns": {'), null);
   });
 
   test('rawimagerc.schema.json format enum matches extension supported formats', () => {
