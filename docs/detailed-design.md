@@ -25,12 +25,16 @@
 
 ### 2.3 サポートピクセルフォーマット
 
-| カテゴリ   | フォーマット                         | Bytes/Pixel | 備考                      |
-| :--------- | :----------------------------------- | :---------- | :------------------------ |
-| Grayscale  | `gray8`, `gray16le`, `gray16be`      | 1, 2        | 8/16-bit グレー           |
-| RGB/BGR    | `rgb24`, `bgr24`, `rgba32`, `bgra32` | 3, 4        | インターリーブ形式        |
-| YUV        | `yuv420p`, `nv12`, `yuyv422`         | 1.5 - 2     | Planar/Semi-planar/Packed |
-| Scientific | `float32`, `depth16`                 | 4, 2        | 自動ウィンドウ/レベル     |
+すべてのピクセルフォーマットの性質(1ピクセルあたりのバイト数、ストリーミングデコード対応可否、グレースケールストリーム対応可否、偶数幅/高さ制約、必要バイト数の計算式、説明文)は `src/formats.ts` の `rawImageFormatDescriptors`(`Record<RawImageFormat, RawImageFormatDescriptor>`)という単一テーブルに集約されている。`types.ts` の `supportedFormats` / `streamDecodableFormats` / `grayscaleStreamFormats`、`decoder.ts` のデコード処理、Webview のヘルプテーブル(設定未検出時に表示される対応フォーマット一覧)は、いずれもこのテーブルから導出される。
+
+| カテゴリ   | フォーマット                         | Bytes/Pixel | ストリーミング | 備考                                          |
+| :--------- | :----------------------------------- | :---------- | :------------- | :-------------------------------------------- |
+| Grayscale  | `gray8`, `gray16le`, `gray16be`      | 1, 2        | ○              | 8/16-bit グレー。ウィンドウ/レベル対象         |
+| RGB/BGR    | `rgb24`, `bgr24`, `rgba32`, `bgra32` | 3, 4        | ○              | インターリーブ形式                            |
+| YUV        | `yuv420p`, `nv12`, `yuyv422`         | 1.5 - 2     | ×              | Planar/Semi-planar/Packed。偶数幅(・高さ)必須 |
+| Scientific | `float32`, `depth16`                 | 4, 2        | × / ○ (depth16) | 自動ウィンドウ/レベル                         |
+
+新しいピクセルフォーマットを追加する場合、`src/formats.ts` の記述子テーブルに 1 エントリを追加する(併せて `types.ts` の `RawImageFormat` 系型エイリアス、`schemas/rawimagerc.schema.json` と `package.json` の enum も更新が必要。これらの整合はテストで機械的に検証される)。詳細は [AGENTS.md](../AGENTS.md) を参照。
 
 ### 2.4 提供機能
 
@@ -165,8 +169,9 @@ sequenceDiagram
 
 ## 6. 制約
 
-- `yuv420p` と `nv12` は幅・高さが偶数である必要がある
-- `yuyv422` は幅が偶数である必要がある
+- `yuv420p` と `nv12` は幅・高さが偶数である必要がある（`src/formats.ts` の `evenWidthRequired` / `evenHeightRequired` フラグで定義）
+- `yuyv422` は幅が偶数である必要がある（同上、`evenWidthRequired` のみ）
+- 各フォーマットが必要とする最小バイト数（ヘッダーを除く）は `src/formats.ts` の `requiredBytes(width, height)` で定義される。すべてのフォーマットで `bytesPerPixel * width * height` を切り上げた値に一致する（yuv420p/nv12 は `bytesPerPixel = 1.5`）
 - Webview のレンダリングロジックは `src/webview/main.ts`（TypeScript）に実装され、esbuild で `out/webview/main.js` に IIFE 形式でバンドルされる。Webview の HTML（`webviewHtml.ts` 生成）はこのバンドルを nonce 付き `<script src="...">` タグで読み込むシェルであり、インライン JS は持たない
 - Webview スクリプトは nonce 付き CSP（`script-src 'nonce-...'`）下で実行する。外部ファイルとして読み込む `out/webview/main.js` の `<script>` タグにも同じ nonce を付与する（nonce があれば読み込み元の URL 自体は CSP 上制限されない）
 - Webview の参照ルート (`localResourceRoots`) は、セキュリティのため以下のディレクトリに制限される（最大 3 ディレクトリ）。
@@ -174,7 +179,7 @@ sequenceDiagram
   - `.rawimagerc` が別の親ディレクトリで見つかった場合は、そのディレクトリ
   - 拡張機能の `out/webview` ディレクトリ（バンドル済み `main.js` を読み込むため）
 - Webview 内の `fetch()` は VS Code の Webview URI スキームを使用してファイルを読み込む。
-- Webview 側の `decoder.ts` 呼び出しは ES import による直接共有であり、Extension 側（Node）と Webview 側（ブラウザ、esbuild バンドル後）で同一のコンパイル済みロジックを実行する。
+- Webview 側の `decoder.ts` / `formats.ts` 呼び出しは ES import による直接共有であり、Extension 側（Node）と Webview 側（ブラウザ、esbuild バンドル後）で同一のコンパイル済みロジックを実行する。
 
 ## 7. エラーハンドリング
 
@@ -184,3 +189,10 @@ sequenceDiagram
 - 必須項目不足
 - 不正フォーマット指定
 - ファイル保存 I/O エラー
+
+### 7.1 データ不足時の統一挙動
+
+ファイルサイズが解決済み設定（幅・高さ・フォーマット）に対して不足している場合、**フォーマットの種類に関わらず**明示的なエラー表示になる（以前はストリーミング系フォーマットと `yuyv422` のみ無警告で黒画像になる非対称な挙動があったが、本挙動により解消された）。
+
+- **Webview（`src/webview/main.ts`）**: `render` メッセージ受信時、デコードを開始する前に `fileSize - headerSize`（`headerSize >= fileSize` の場合を含む）を `src/formats.ts` の `requiredBytes(width, height)` と比較する。不足している場合はフェッチ・デコードに入らず、`Insufficient data: <format> <width>x<height> requires <N> bytes, file has <M> bytes after header` 形式のメッセージをエラーボックス（`role="alert"`）に表示する。ファイルが必要量より大きい場合は従来どおり許容し、余剰バイトは無視する。
+- **`decodeRawImageToRgba()`（`decoder.ts`）**: 冒頭で同じ `requiredBytes(width, height)` チェックを行い、`pixelData.length` が不足していれば「期待バイト数・実バイト数・フォーマット名・解像度」を含む `Error` を送出する（全 12 フォーマット共通。以前は `yuv420p`/`nv12` のみ明示エラーだった）。

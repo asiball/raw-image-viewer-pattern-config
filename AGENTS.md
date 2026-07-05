@@ -57,7 +57,7 @@ npm test             # フルスイート: compile + lint + vscode-test（Electr
 - **`localResourceRoots`** は開いたファイルのあるディレクトリと、拡張機能の `out/webview` ディレクトリ（バンドル済み `main.js` を Webview から読み込むため）を常に含む。設定ファイル（`.rawimagerc`）が別ディレクトリで見つかった場合はそのディレクトリも追加され、最大 3 ディレクトリになる。
 - TypeScript の **strict モード**が有効。`tsc -p ./` と `tsc -p tsconfig.webview.json` の両方でクリーンにコンパイルできること。
 - ESLint が適用するルール: `curly`、`eqeqeq`、`semi`、`no-throw-literal`、`@typescript-eslint/naming-convention`（import は camelCase または PascalCase）。`src/webview` も対象。
-- サポートするピクセルフォーマットは `decoder.ts` の `decodeRawImageToRgba()` 内の switch 文で完全に定義される。新しいフォーマットを追加するには、その switch 文と `src/webview/main.ts` 内の「設定未検出時のヘルプテーブル」の両方を更新する必要がある。
+- サポートするピクセルフォーマットは `src/formats.ts` の `rawImageFormatDescriptors`（`Record<RawImageFormat, RawImageFormatDescriptor>`）という単一の記述子テーブルで定義される。`types.ts` の `supportedFormats` / `streamDecodableFormats` / `grayscaleStreamFormats`、`decoder.ts` のデコード処理、Webview の「設定未検出時のヘルプテーブル」はいずれもこのテーブルから導出される。**新しいフォーマットを追加する場合は `src/formats.ts` に 1 エントリを追加すること**（併せて `types.ts` の `RawImageFormat` 系型エイリアス、`schemas/rawimagerc.schema.json` の `enum`/`enumDescriptions`、`package.json` の `rawviewer.defaultFormat` の `enum` も更新する。これらの整合は `extension.test.ts` のテストで機械的に強制される）。
 
 ## GitHub Issues・PR の確認
 
