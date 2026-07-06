@@ -23,6 +23,7 @@ import {
   createGrayDecodeState,
   createRawImageDecodeState,
   decodeRawImageToRgba,
+  validateEvenDimensions,
 } from '../decoder';
 import { getRawImageFormatDescriptor, rawImageFormatDescriptorList } from '../formats';
 import { grayscaleStreamFormats, streamDecodableFormats } from '../types';
@@ -151,6 +152,23 @@ function clearActivePanHandlers(): void {
   }
 }
 
+// 修正: 以前はこのクリーンアップが render ハンドラの末尾寄り(早期 return の後)に
+// あったため、「成功表示 → no-config/エラー系の render」という遷移で旧
+// canvas/ImageData が ResizeObserver と window リスナーに掴まれたまま残り、
+// リークしていた。この関数に抽出し、render/error いずれのメッセージでも
+// 早期 return より前（分岐に入る前）に必ず呼び出す。
+function releaseActiveRenderResources(): void {
+  if (activeAbortController) {
+    activeAbortController.abort();
+    activeAbortController = null;
+  }
+  if (activeResizeObserver) {
+    activeResizeObserver.disconnect();
+    activeResizeObserver = null;
+  }
+  clearActivePanHandlers();
+}
+
 function applyColormapToData(data: Uint8ClampedArray, npx: number): void {
   if (!currentColormapLut) {
     return;
@@ -237,6 +255,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
 
   if (msg.type === 'error') {
     clearReadyTimer();
+    releaseActiveRenderResources();
     root.className = 'center';
     root.innerHTML =
       '<div class="error-box" role="alert"><strong>Error:</strong> ' +
@@ -250,6 +269,10 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
   currentColormap = 'Grayscale';
   currentColormapLut = null;
   const { config, configSource, fileUri, fileSize } = msg;
+
+  // 早期 return（!config / !fileUri / データ不足）よりも前に、前回のレンダリングが
+  // 掴んでいたリソース（fetch・ResizeObserver・window のパンリスナー）を解放する。
+  releaseActiveRenderResources();
 
   if (!config) {
     root.className = 'center';
@@ -280,11 +303,29 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     return;
   }
 
+  const formatDescriptor = getRawImageFormatDescriptor(format);
+
+  // 偶数幅/高さ制約(yuv420p/nv12/yuyv422)を、fetch を始める前に検証する。
+  // decodeRawImageToRgba() 側は一括デコード経路でのみこのチェックを行うため、
+  // ストリーミング経路(RGB/BGR/グレースケール系にはそもそも制約がないため無害)や
+  // 単に「エラーを投げるだけ」のフローに乗らない YUV 系一括デコード経路のために、
+  // ここで事前に弾いて fetch に到達させない。
+  try {
+    validateEvenDimensions(format, formatDescriptor, width, height);
+  } catch (err: unknown) {
+    root.className = 'center';
+    root.innerHTML =
+      '<div class="error-box" role="alert"><strong>Error:</strong> ' +
+      escapeHtml(err instanceof Error ? err.message : String(err)) +
+      '</div>';
+    return;
+  }
+
   // デコードを開始する前に、ファイルサイズがこのフォーマット・解像度に必要な
   // 最小バイト数を満たしているか検証する。以前はストリーミング系フォーマットや
   // yuyv422 はここでチェックせず、データ不足時に無警告で黒画像を表示していた。
   // headerSize が fileSize 以上の場合も「利用可能バイト数 0」として扱う。
-  const requiredBytesForFormat = getRawImageFormatDescriptor(format).requiredBytes(width, height);
+  const requiredBytesForFormat = formatDescriptor.requiredBytes(width, height);
   const availableBytes = fileSize - headerSize;
   if (availableBytes < requiredBytesForFormat) {
     root.className = 'center';
@@ -302,16 +343,6 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       ' bytes after header.</div>';
     return;
   }
-
-  // 既存のフェッチをキャンセルして新しいレンダリングを開始する
-  if (activeAbortController) {
-    activeAbortController.abort();
-  }
-  if (activeResizeObserver) {
-    activeResizeObserver.disconnect();
-    activeResizeObserver = null;
-  }
-  clearActivePanHandlers();
 
   activeAbortController = typeof AbortController === 'function' ? new AbortController() : null;
   const currentRenderId = ++activeRenderId;

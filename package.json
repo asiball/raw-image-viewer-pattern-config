@@ -66,7 +66,8 @@
       "explorer/context": [
         {
           "command": "rawviewer.openAsRawImage",
-          "group": "navigation"
+          "group": "navigation",
+          "when": "!explorerResourceIsFolder"
         }
       ],
       "editor/title/context": [

@@ -21,19 +21,18 @@
  * `<script src="...">` として読み込まれるだけです。
  */
 
+import { randomBytes } from 'crypto';
+
 /**
  * セキュリティのための nonce（ワンタイムトークン）を生成します。
  *
  * nonce は Content Security Policy（CSP）でスクリプトを許可するために使います。
- * 毎回ランダムな文字列を生成することで、ページごとに異なるトークンになります。
+ * `Math.random()` は暗号論的に安全な乱数源ではなく予測され得るため、Node の
+ * `crypto.randomBytes()`（CSPRNG）で生成した 16 バイトを base64url エンコードして使う。
+ * このファイルは拡張機能本体（Node 側）でのみ実行され、Webview バンドルには含まれない。
  */
 function getNonce(): string {
-  let text = '';
-  const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  for (let i = 0; i < 32; i++) {
-    text += possible.charAt(Math.floor(Math.random() * possible.length));
-  }
-  return text;
+  return randomBytes(16).toString('base64url');
 }
 
 /**

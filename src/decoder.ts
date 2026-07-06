@@ -712,8 +712,11 @@ const rawImageBatchDecoders: Record<RawImageFormat, RawImageBatchDecodeFn> = {
 /**
  * 幅・高さの偶数制約（`src/formats.ts` の `evenWidthRequired`/`evenHeightRequired`）を検証する。
  * 満たさない場合は format 名を含む Error を送出する。
+ *
+ * `src/webview/main.ts` からも ES import で直接呼び出され、fetch/デコードを始める前の
+ * 事前チェックに使われる（奇数幅の yuv420p/nv12/yuyv422 などをフェッチ前にエラー表示するため）。
  */
-function validateEvenDimensions(
+export function validateEvenDimensions(
   format: RawImageFormat,
   descriptor: RawImageFormatDescriptor,
   width: number,

@@ -23,7 +23,7 @@ import * as vscode from 'vscode';
 // （import = 他のファイルで定義された部品を「借りてくる」）
 import {
   findConfigPath,
-  getConfigSearchDirectories,
+  getConfigWatchDirectories,
   loadRawImageConfig,
   resolveFallbackRawImageConfig,
   validateOptionalFormat,
@@ -304,8 +304,12 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
       )
     );
 
-    // ファイルから上に向かって各ディレクトリの .rawimagerc を監視する
-    for (const dir of getConfigSearchDirectories(document.uri.fsPath)) {
+    // ファイルから上に向かって各ディレクトリの .rawimagerc を監視する。
+    // findConfigPath() 自体はファイルシステムルートまで探索するが、watcher の登録は
+    // ワークスペースルート（ルート自身を含む）で打ち切る。ワークスペース外のファイルは
+    // そのディレクトリのみ監視する（getConfigWatchDirectories 参照）。
+    const workspaceRootFsPath = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+    for (const dir of getConfigWatchDirectories(document.uri.fsPath, workspaceRootFsPath)) {
       registerRefreshListeners(
         vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(dir, '.rawimagerc'))
       );

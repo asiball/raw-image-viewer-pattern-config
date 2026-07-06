@@ -72,6 +72,7 @@
     "patterns": {
       "type": "array",
       "description": "Ordered list of glob-pattern rules to configure rendering for specific files or subdirectories. Each entry's \"match\" glob is evaluated against the file path relative to this .rawimagerc's directory. When multiple entries match the same file, their fields are merged in array order with later entries winning (an earlier entry's field is only overridden if a later matching entry also specifies it).",
+      "minItems": 1,
       "items": {
         "$ref": "#/definitions/patternEntry"
       }
