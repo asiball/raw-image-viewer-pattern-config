@@ -196,6 +196,8 @@ sequenceDiagram
   - 拡張機能の `out/webview` ディレクトリ（バンドル済み `main.js` を読み込むため）
 - Webview 内の `fetch()` は VS Code の Webview URI スキームを使用してファイルを読み込む。
 - Webview 側の `decoder.ts` / `formats.ts` 呼び出しは ES import による直接共有であり、Extension 側（Node）と Webview 側（ブラウザ、esbuild バンドル後）で同一のコンパイル済みロジックを実行する。
+- `RawImageEditorProvider.register()` は `webviewOptions: { retainContextWhenHidden: true }` を指定している。これにより、パネルが非表示（バックグラウンドタブ）になっても Webview の DOM/canvas/ImageData は破棄されずそのまま保持され、再表示時に再フェッチ・再デコードすることなく即座に元の表示へ復帰できる。これは意図的なトレードオフであり、非表示のまま保持されるタブが多いほど（特に解像度の大きい画像ほど）拡張機能ホストのメモリ使用量が比例して増える。
+- `.rawimagerc` の監視（`FileSystemWatcher`）は `getConfigWatchDirectories()` により、対象ファイルのディレクトリから **ワークスペースルート（`vscode.workspace.getWorkspaceFolder()` が返すフォルダ、ルート自身を含む）まで** に限定される。ワークスペース外のファイル（`workspaceRootFsPath` が undefined）を開いた場合は、そのファイルのディレクトリのみを監視する。これは `findConfigPath()` によるファイルシステムルートまでの**探索**とは範囲が異なる（探索はルートまで、監視はワークスペースルートまで）。この区別がないと、ファイルを開くたびにワークスペースルートより上の祖先ディレクトリすべてに watcher が登録され続けてしまう。
 
 ## 7. エラーハンドリング
 
