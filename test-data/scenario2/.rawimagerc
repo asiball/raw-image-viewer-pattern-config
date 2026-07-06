@@ -1,10 +1,11 @@
 {
-  "patterns": {
-    "*": {
+  "patterns": [
+    {
+      "match": "*",
       "width": 128,
       "height": 128,
       "headerSize": 0,
       "format": "gray8"
     }
-  }
+  ]
 }

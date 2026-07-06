@@ -125,20 +125,31 @@ export interface RawImageConfig {
 }
 
 /**
+ * `patterns` 配列の1エントリの形。
+ * `match` はグロブパターン（必須）で、他のフィールドは従来の imageConfig と同じく
+ * すべて任意です。複数のエントリが同じファイルにマッチした場合、配列の**後方が勝つ**
+ * （フィールド単位でマージされ、後のエントリが指定したフィールドのみ上書きする）。
+ */
+export interface RawImagePatternEntry {
+  /** マッチさせるグロブパターン（`.editorconfig` 方式、`.rawimagerc` のディレクトリからの相対パスに対して評価） */
+  match: string;
+  width?: number;
+  height?: number;
+  headerSize?: number;
+  format?: RawImageFormat;
+}
+
+/**
  * .rawimagerc ファイルをパースした直後の生データの形。
  * JSON.parse() の結果を TypeScript で安全に扱うために定義します。
  * 実際の値検証は config.ts の parseRawImageConfig() で行います。
+ *
+ * `patterns` は配列で、記述順（配列のインデックス順）が後勝ちマージの順序に
+ * そのまま対応します（構文上の順序が保証されるため、JSON オブジェクトキーの
+ * 列挙順に関する問題は生じません）。
  */
 export interface RawImageConfigRecord {
-  patterns?: Record<
-    string,
-    {
-      width?: number;
-      height?: number;
-      headerSize?: number;
-      format?: RawImageFormat;
-    }
-  >;
+  patterns?: RawImagePatternEntry[];
 }
 
 /**
