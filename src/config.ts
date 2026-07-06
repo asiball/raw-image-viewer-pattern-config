@@ -97,6 +97,52 @@ export function getConfigSearchDirectories(filePath: string): string[] {
 }
 
 /**
+ * FileSystemWatcher を登録すべきディレクトリのリストを返します。
+ *
+ * `getConfigSearchDirectories()` はファイルシステムルートまで全祖先を返しますが、
+ * これをそのまま watcher 登録に使うと、ファイルを開くたびにルート直下まで
+ * 10〜20 個の watcher が作られてしまいます（`findConfigPath()` による .rawimagerc の
+ * "探索"はルートまで行いますが、watcher の"監視"はワークスペースルートで打ち切ります）。
+ *
+ * @param filePath              対象ファイルのパス
+ * @param workspaceRootFsPath   ファイルが属するワークスペースフォルダのパス
+ *                              （`vscode.workspace.getWorkspaceFolder(uri)?.uri.fsPath`）。
+ *                              ワークスペース外のファイルなど undefined の場合は、
+ *                              ファイルのディレクトリのみを返す。
+ */
+export function getConfigWatchDirectories(
+  filePath: string,
+  workspaceRootFsPath?: string
+): string[] {
+  const startDir = path.dirname(filePath);
+  if (!workspaceRootFsPath) {
+    return [startDir];
+  }
+
+  // Windows は大文字小文字を区別しないパス比較にする（getLocalResourceRoots と同様の方針）
+  const normalize = (p: string): string => {
+    const normalized = path.normalize(p);
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+  };
+  const normalizedRoot = normalize(workspaceRootFsPath);
+
+  const directories: string[] = [];
+  let dir = startDir;
+  while (true) {
+    directories.push(dir);
+    if (normalize(dir) === normalizedRoot) {
+      break; // ワークスペースルート自身を含めて打ち切る
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      break; // ファイルシステムルートに到達（ワークスペースルート外にあるケースの防御的フォールバック）
+    }
+    dir = parent;
+  }
+  return directories;
+}
+
+/**
  * 対象ファイルのディレクトリからルートへ向かって .rawimagerc を探し、
  * 最初に見つかったファイルのパスを返します。見つからない場合は undefined。
  */
@@ -239,6 +285,46 @@ function validatePatternMatch(value: unknown, index: number, configPath: string)
 }
 
 /**
+ * patterns[index] の1フィールド分の整数値を検証します（width/height/headerSize 用）。
+ * `null` を含め、数値以外の値はすべてエラーとします（後勝ちマージ後の最終値だけを
+ * 検証すると、後続エントリに上書きされて最終値に現れない「負けたエントリ」の型不正が
+ * 握りつぶされてしまうため、マージ前にエントリ単位で検証する）。
+ */
+function validatePatternEntryInteger(
+  value: unknown,
+  field: 'width' | 'height' | 'headerSize',
+  index: number,
+  configPath: string,
+  min: number
+): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min) {
+    const kind = min === 1 ? 'positive' : 'non-negative';
+    throw new Error(
+      `Invalid .rawimagerc at "${configPath}": "patterns[${index}].${field}" must be a ${kind} integer.`
+    );
+  }
+  return value;
+}
+
+/**
+ * patterns[index].format を検証します。`null` を含め、対応フォーマット文字列以外は
+ * すべてエラーとします（"format": null が width/height と非対称に無警告で rgb24 に
+ * フォールバックしていた挙動を修正するため、他フィールドと同様にここで明示的に弾く）。
+ */
+function validatePatternEntryFormat(
+  value: unknown,
+  index: number,
+  configPath: string
+): RawImageFormat {
+  if (typeof value !== 'string' || !supportedFormats.includes(value as RawImageFormat)) {
+    throw new Error(
+      `Invalid .rawimagerc at "${configPath}": "patterns[${index}].format" must be one of ${supportedFormats.join(', ')}.`
+    );
+  }
+  return value as RawImageFormat;
+}
+
+/**
  * .rawimagerc の JSON 文字列をパースして RawImageConfig を返します。
  *
  * patterns 配列の各エントリの "match" グロブパターンを targetFilePath と照合し、
@@ -308,9 +394,34 @@ export function parseRawImageConfig(
         return;
       }
 
-      // 配列の後方が勝つ後勝ちマージ。"match" 自体はマージ対象から除く
-      const { match: _match, ...overrides } = record;
-      Object.assign(resolved, overrides);
+      // 配列の後方が勝つ後勝ちマージ。フィールドごとに、値を resolved にマージする
+      // "前" に検証する（Object.assign 後の最終値だけを検証すると、後続エントリに
+      // 上書きされて最終値に現れない「負けたエントリ」の型不正を見逃してしまうため）。
+      // "match" 以外の未知フィールド（タイプミス等）は従来どおり無視する。
+      if ('width' in record) {
+        resolved.width = validatePatternEntryInteger(record.width, 'width', index, configPath, 1);
+      }
+      if ('height' in record) {
+        resolved.height = validatePatternEntryInteger(
+          record.height,
+          'height',
+          index,
+          configPath,
+          1
+        );
+      }
+      if ('headerSize' in record) {
+        resolved.headerSize = validatePatternEntryInteger(
+          record.headerSize,
+          'headerSize',
+          index,
+          configPath,
+          0
+        );
+      }
+      if ('format' in record) {
+        resolved.format = validatePatternEntryFormat(record.format, index, configPath);
+      }
     });
   }
 
@@ -457,11 +568,10 @@ export function resolveFallbackRawImageConfig(
   }
 
   // 設定ソースを判定（ファイル名推測・設定のどちらを使ったか）
-  const usedInference =
-    inferred !== null &&
-    (inferred.width !== undefined ||
-      inferred.height !== undefined ||
-      inferred.format !== undefined);
+  // inferRawImageConfigFromFilename() は width/height/format のいずれか1つでも
+  // 推測できた場合にのみ非 null を返す（すべて undefined なら null）。そのため
+  // inferred !== null は「width/height/format のいずれかを推測できた」と同値。
+  const usedInference = inferred !== null;
   const usedSettings =
     validatedSettings.defaultWidth !== undefined ||
     validatedSettings.defaultHeight !== undefined ||
@@ -479,7 +589,9 @@ export function resolveFallbackRawImageConfig(
     config: {
       width,
       height,
-      headerSize: inferred?.headerSize ?? validatedSettings.defaultHeaderSize ?? 0,
+      // inferRawImageConfigFromFilename() はファイル名から headerSize を推測しないため、
+      // 常に validatedSettings.defaultHeaderSize（ワークスペース設定）にフォールバックする。
+      headerSize: validatedSettings.defaultHeaderSize ?? 0,
       format: inferred?.format ?? validatedSettings.defaultFormat ?? 'rgb24',
     },
     source,

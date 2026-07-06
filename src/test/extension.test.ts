@@ -26,6 +26,7 @@ import {
 import {
   findConfigPath,
   getConfigSearchDirectories,
+  getConfigWatchDirectories,
   inferRawImageConfigFromFilename,
   loadRawImageConfig,
   parseRawImageConfig,
@@ -66,15 +67,20 @@ suite('Extension Test Suite', () => {
   });
 
   test('parseRawImageConfig rejects invalid numeric fields', () => {
+    // 各エントリのフィールドはマージ前に検証されるため、エラーメッセージには
+    // 該当エントリのインデックス（patterns[0] など）が含まれる。
     const cases: Array<[Record<string, unknown>, RegExp]> = [
-      [{ patterns: [{ match: '*', width: 0, height: 32 }] }, /"width" must be a positive integer/],
+      [
+        { patterns: [{ match: '*', width: 0, height: 32 }] },
+        /"patterns\[0\]\.width" must be a positive integer/,
+      ],
       [
         { patterns: [{ match: '*', width: 64, height: -1 }] },
-        /"height" must be a positive integer/,
+        /"patterns\[0\]\.height" must be a positive integer/,
       ],
       [
         { patterns: [{ match: '*', width: 64, height: 32, headerSize: 1.5 }] },
-        /"headerSize" must be a non-negative integer/,
+        /"patterns\[0\]\.headerSize" must be a non-negative integer/,
       ],
     ];
 
@@ -105,9 +111,64 @@ suite('Extension Test Suite', () => {
         ),
       (error: unknown) => {
         assert.ok(error instanceof Error);
-        assert.match(error.message, /"format" must be one of/);
+        assert.match(error.message, /"patterns\[0\]\.format" must be one of/);
         return true;
       }
+    );
+  });
+
+  test('parseRawImageConfig rejects an invalid field on a losing (overridden) pattern entry', () => {
+    // entry 0 の width は不正だが、entry 1 が width を上書きして最終的なマージ結果には
+    // 現れない。以前は最終マージ後の値だけを検証していたため、この不正値は握りつぶされて
+    // いた。フィールド単位でマージ前に検証するようになったため、負けたエントリの型不正
+    // でもエラーになる。
+    assert.throws(
+      () =>
+        parseRawImageConfig(
+          JSON.stringify({
+            patterns: [
+              { match: '*', width: 'not-a-number', height: 32 },
+              { match: '*', width: 100 },
+            ],
+          }),
+          'D:\\repo\\.rawimagerc',
+          'D:\\repo\\frame.raw'
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /"patterns\[0\]\.width" must be a positive integer/);
+        return true;
+      }
+    );
+  });
+
+  test('parseRawImageConfig rejects an explicit "format": null entry instead of falling back to rgb24', () => {
+    // 以前は resolved.format ?? 'rgb24' が null を吸収してしまい、width/height と非対称に
+    // 無警告で rgb24 にフォールバックしていた。now: null は明示的にエラーになる。
+    assert.throws(
+      () =>
+        parseRawImageConfig(
+          JSON.stringify({ patterns: [{ match: '*', width: 64, height: 32, format: null }] }),
+          'D:\\repo\\.rawimagerc',
+          'D:\\repo\\frame.raw'
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /"patterns\[0\]\.format" must be one of/);
+        return true;
+      }
+    );
+  });
+
+  test('parseRawImageConfig rejects an explicit "width": null / "height": null entry with a patterns[i]-qualified message', () => {
+    assert.throws(
+      () =>
+        parseRawImageConfig(
+          JSON.stringify({ patterns: [{ match: '*', width: null, height: 32 }] }),
+          'D:\\repo\\.rawimagerc',
+          'D:\\repo\\frame.raw'
+        ),
+      /"patterns\[0\]\.width" must be a positive integer/
     );
   });
 
@@ -254,6 +315,54 @@ suite('Extension Test Suite', () => {
             path.normalize('/repo').toLowerCase(),
             path.normalize('/').toLowerCase(),
           ]
+    );
+  });
+
+  test('getConfigWatchDirectories stops at the workspace root (inclusive) when inside a workspace', () => {
+    const isWindows = process.platform === 'win32';
+    const filePath = isWindows
+      ? 'D:\\repo\\images\\nested\\frame.raw'
+      : '/repo/images/nested/frame.raw';
+    const workspaceRoot = isWindows ? 'D:\\repo' : '/repo';
+
+    assert.deepStrictEqual(
+      getConfigWatchDirectories(filePath, workspaceRoot).map((dir) =>
+        path.normalize(dir).toLowerCase()
+      ),
+      [
+        path
+          .normalize(isWindows ? 'D:\\repo\\images\\nested' : '/repo/images/nested')
+          .toLowerCase(),
+        path.normalize(isWindows ? 'D:\\repo\\images' : '/repo/images').toLowerCase(),
+        path.normalize(workspaceRoot).toLowerCase(),
+      ]
+    );
+  });
+
+  test('getConfigWatchDirectories returns only the file directory when outside any workspace', () => {
+    const isWindows = process.platform === 'win32';
+    const filePath = isWindows
+      ? 'D:\\repo\\images\\nested\\frame.raw'
+      : '/repo/images/nested/frame.raw';
+
+    assert.deepStrictEqual(
+      getConfigWatchDirectories(filePath, undefined).map((dir) =>
+        path.normalize(dir).toLowerCase()
+      ),
+      [path.normalize(isWindows ? 'D:\\repo\\images\\nested' : '/repo/images/nested').toLowerCase()]
+    );
+  });
+
+  test('getConfigWatchDirectories returns a single entry when the file sits directly under the workspace root', () => {
+    const isWindows = process.platform === 'win32';
+    const filePath = isWindows ? 'D:\\repo\\frame.raw' : '/repo/frame.raw';
+    const workspaceRoot = isWindows ? 'D:\\repo' : '/repo';
+
+    assert.deepStrictEqual(
+      getConfigWatchDirectories(filePath, workspaceRoot).map((dir) =>
+        path.normalize(dir).toLowerCase()
+      ),
+      [path.normalize(workspaceRoot).toLowerCase()]
     );
   });
 
@@ -1464,11 +1573,14 @@ suite('Extension Test Suite', () => {
       messageListeners: Array<(event: { data: unknown }) => void>;
       postedMessages: unknown[];
       windowListenerCounts: Record<string, number>;
+      resizeObserverState: { instancesCreated: number; disconnectCalls: number };
     } {
       const root = createElementStub();
       const messageListeners: Array<(event: { data: unknown }) => void> = [];
       const postedMessages: unknown[] = [];
       const windowListenerCounts: Record<string, number> = {};
+      // ResizeObserver の生成数・disconnect() 呼び出し回数を追跡する（①のリーク回帰テスト用）。
+      const resizeObserverState = { instancesCreated: 0, disconnectCalls: 0 };
 
       const windowStub = {
         addEventListener(type: string, handler: (event: { data: unknown }) => void) {
@@ -1521,7 +1633,15 @@ suite('Extension Test Suite', () => {
           return 1;
         },
         ResizeObserver: function ResizeObserverStub() {
-          return { observe() {}, disconnect() {} };
+          resizeObserverState.instancesCreated += 1;
+          return {
+            observe() {
+              /* no-op */
+            },
+            disconnect() {
+              resizeObserverState.disconnectCalls += 1;
+            },
+          };
         },
         fetch:
           fetchImpl ??
@@ -1533,7 +1653,14 @@ suite('Extension Test Suite', () => {
       };
       vm.createContext(context);
 
-      return { context, root, messageListeners, postedMessages, windowListenerCounts };
+      return {
+        context,
+        root,
+        messageListeners,
+        postedMessages,
+        windowListenerCounts,
+        resizeObserverState,
+      };
     }
 
     function runWebviewScript(fetchImpl?: (...args: unknown[]) => Promise<unknown>): {
@@ -1541,10 +1668,17 @@ suite('Extension Test Suite', () => {
       root: Record<string, unknown>;
       postedMessages: unknown[];
       windowListenerCounts: Record<string, number>;
+      resizeObserverState: { instancesCreated: number; disconnectCalls: number };
     } {
       const script = readWebviewBundle();
-      const { context, root, messageListeners, postedMessages, windowListenerCounts } =
-        createWebviewVmContext(fetchImpl);
+      const {
+        context,
+        root,
+        messageListeners,
+        postedMessages,
+        windowListenerCounts,
+        resizeObserverState,
+      } = createWebviewVmContext(fetchImpl);
 
       // 構文エラーやハンドラ内の未定義参照があればここで例外が発生する。
       vm.runInContext(script, context);
@@ -1556,6 +1690,7 @@ suite('Extension Test Suite', () => {
         root,
         postedMessages,
         windowListenerCounts,
+        resizeObserverState,
       };
     }
 
@@ -1611,6 +1746,43 @@ suite('Extension Test Suite', () => {
         'expected an explicit insufficient-data error message'
       );
       assert.ok(String(root.innerHTML).includes('gray8'), 'expected the format name in the error');
+    });
+
+    test('render message with an odd-width yuv420p config shows an error before fetching', () => {
+      // yuv420p は幅・高さともに偶数である必要がある（src/formats.ts の
+      // evenWidthRequired/evenHeightRequired）。以前はこの制約が decoder.ts の一括デコード
+      // 経路でのみ検証されていたため、fetch 開始後にしかエラーにならなかった。
+      // decoder.ts の validateEvenDimensions を fetch 前に呼ぶようになったため、
+      // fetch には一切到達しないことを検証する。
+      let fetchCalled = false;
+      const fetchStub = () => {
+        fetchCalled = true;
+        return Promise.reject(new Error('fetch should not be called for an invalid odd width'));
+      };
+
+      const { dispatchMessage, root } = runWebviewScript(fetchStub as never);
+
+      assert.doesNotThrow(() => {
+        dispatchMessage({
+          type: 'render',
+          // yuv420p 3x4: 幅が奇数。requiredBytes = ceil(3*4*1.5) = 18 バイトなので、
+          // データ不足チェックには引っかからないようにファイルサイズを十分にしておく。
+          config: { width: 3, height: 4, headerSize: 0, format: 'yuv420p' },
+          configSource: 'rawimagerc',
+          fileUri: 'x',
+          fileSize: 18,
+        });
+      });
+
+      assert.strictEqual(
+        fetchCalled,
+        false,
+        'expected fetch not to be called when the even-dimension constraint is violated'
+      );
+      assert.ok(
+        String(root.innerHTML).includes('even width'),
+        'expected an explicit even-dimension error message'
+      );
     });
 
     test('error message does not throw and displays the error text', () => {
@@ -1672,6 +1844,143 @@ suite('Extension Test Suite', () => {
         windowListenerCounts.mouseup,
         1,
         'mouseup listeners must not accumulate across renders'
+      );
+    });
+
+    test('a successful render followed by a config:null render releases the previous ResizeObserver and window listeners', async () => {
+      // 修正: 以前は render ハンドラのクリーンアップ（ResizeObserver.disconnect() /
+      // window リスナー解除 / fetch の abort）が !config などの早期 return より後にあった
+      // ため、「成功表示 → config:null render」という遷移で旧 canvas の ResizeObserver と
+      // window リスナーが解放されずに残っていた（リーク）。releaseActiveRenderResources()
+      // を早期 return より前に呼ぶようになったことで、この遷移後にリスナー数が 0 に戻り
+      // ResizeObserver が disconnect されることを検証する。
+      const fetchStub = () =>
+        Promise.resolve({
+          ok: true,
+          body: null,
+          arrayBuffer: () => Promise.resolve(new Uint8Array([128]).buffer),
+        });
+
+      const { dispatchMessage, windowListenerCounts, resizeObserverState } = runWebviewScript(
+        fetchStub as never
+      );
+
+      dispatchMessage({
+        type: 'render',
+        config: { width: 1, height: 1, headerSize: 0, format: 'gray8' },
+        configSource: 'rawimagerc',
+        fileUri: 'x',
+        fileSize: 1,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.strictEqual(
+        windowListenerCounts.mousemove,
+        1,
+        'expected one mousemove listener after success'
+      );
+      assert.strictEqual(
+        windowListenerCounts.mouseup,
+        1,
+        'expected one mouseup listener after success'
+      );
+      assert.strictEqual(
+        resizeObserverState.instancesCreated,
+        1,
+        'expected one ResizeObserver created'
+      );
+      assert.strictEqual(
+        resizeObserverState.disconnectCalls,
+        0,
+        'the ResizeObserver from the successful render must still be connected'
+      );
+
+      dispatchMessage({
+        type: 'render',
+        config: null,
+        configSource: 'settings',
+        fileUri: 'x',
+        fileSize: 0,
+      });
+
+      assert.strictEqual(
+        windowListenerCounts.mousemove,
+        0,
+        'expected the mousemove listener to be released after the config:null render'
+      );
+      assert.strictEqual(
+        windowListenerCounts.mouseup,
+        0,
+        'expected the mouseup listener to be released after the config:null render'
+      );
+      assert.strictEqual(
+        resizeObserverState.disconnectCalls,
+        1,
+        'expected the previous ResizeObserver to be disconnected after the config:null render'
+      );
+    });
+
+    test('a successful render followed by an insufficient-data render releases the previous ResizeObserver and window listeners', async () => {
+      // 上と同じ回帰を、もう一つの早期 return 経路（データ不足エラー）でも検証する。
+      const fetchStub = () =>
+        Promise.resolve({
+          ok: true,
+          body: null,
+          arrayBuffer: () => Promise.resolve(new Uint8Array([128]).buffer),
+        });
+
+      const { dispatchMessage, windowListenerCounts, resizeObserverState } = runWebviewScript(
+        fetchStub as never
+      );
+
+      dispatchMessage({
+        type: 'render',
+        config: { width: 1, height: 1, headerSize: 0, format: 'gray8' },
+        configSource: 'rawimagerc',
+        fileUri: 'x',
+        fileSize: 1,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.strictEqual(
+        windowListenerCounts.mousemove,
+        1,
+        'expected one mousemove listener after success'
+      );
+      assert.strictEqual(
+        windowListenerCounts.mouseup,
+        1,
+        'expected one mouseup listener after success'
+      );
+      assert.strictEqual(
+        resizeObserverState.disconnectCalls,
+        0,
+        'ResizeObserver must still be connected'
+      );
+
+      dispatchMessage({
+        type: 'render',
+        // gray8 は 4x4 = 16 バイト必要だが、ファイルは 4 バイトしかない（データ不足エラー）
+        config: { width: 4, height: 4, headerSize: 0, format: 'gray8' },
+        configSource: 'rawimagerc',
+        fileUri: 'x',
+        fileSize: 4,
+      });
+
+      assert.strictEqual(
+        windowListenerCounts.mousemove,
+        0,
+        'expected the mousemove listener to be released after the insufficient-data render'
+      );
+      assert.strictEqual(
+        windowListenerCounts.mouseup,
+        0,
+        'expected the mouseup listener to be released after the insufficient-data render'
+      );
+      assert.strictEqual(
+        resizeObserverState.disconnectCalls,
+        1,
+        'expected the previous ResizeObserver to be disconnected after the insufficient-data render'
       );
     });
   });
