@@ -573,18 +573,20 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // パターンベースの設定ファイルの雛形
       const template = {
-        patterns: {
-          '*': {
+        patterns: [
+          {
+            match: '*',
             width: 1920,
             height: 1080,
             headerSize: 0,
             format: 'rgb24',
           },
-          '**/thumbnails/*.bin': {
+          {
+            match: '**/thumbnails/*.bin',
             width: 128,
             height: 128,
           },
-        },
+        ],
       };
 
       try {

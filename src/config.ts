@@ -208,151 +208,41 @@ export function validateOptionalFormat(
 // =============================================================================
 
 /**
- * .rawimagerc の生 JSON テキストから "patterns" オブジェクトのトップレベルキーを
- * 記述順（ソース順）で抽出します。
- *
- * JavaScript のオブジェクトキー列挙順は、整数風のキー（例: "12"）を記述位置に
- * 関係なく先頭へ昇順で並べます。そのため JSON.parse 済みオブジェクトへの
- * Object.entries だけでは「ファイル内で後に書かれたパターンが勝つ」という
- * 後勝ちマージ仕様を守れません。この関数はパース結果ではなく生テキストを
- * 走査して、記述順どおりのキー順序を求めます。
- *
- * 文字列リテラル（エスケープシーケンス含む）とブレース/ブラケットの深度を
- * 正しく処理するため、パターン値の中に `{`・`}`・`:` や引用符が含まれていても
- * 誤動作しません。
- *
- * "patterns" キーが見つからない、または構造が想定外の場合は null を返します。
- * 呼び出し側は null のとき Object.entries の列挙順にフォールバックします。
+ * 旧オブジェクト形式（`"patterns": { "<glob>": {...} }`）で書かれた .rawimagerc を
+ * 検出した際に投げる、配列形式への移行方法を示すエラーを組み立てます。
  */
-export function extractPatternKeyOrder(content: string): string[] | null {
-  const keys: string[] = [];
-  let depth = 0; // 現在のブレース/ブラケット深度（文字列内は除外）
-  let inPatterns = false; // patterns オブジェクトの内側を走査中か
-  let patternsDepth = 0; // patterns オブジェクト直下のキーが現れる深度
-  let sawPatternsKey = false;
-  const isWhitespace = (ch: string): boolean =>
-    ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
-  const length = content.length;
-  let i = 0;
-
-  while (i < length) {
-    const ch = content[i];
-
-    if (ch === '"') {
-      // 文字列リテラルを丸ごと読み取る（エスケープを考慮）
-      const start = i;
-      i += 1;
-      let closed = false;
-      while (i < length) {
-        if (content[i] === '\\') {
-          i += 2; // エスケープシーケンスの次の1文字をスキップ
-          continue;
-        }
-        if (content[i] === '"') {
-          closed = true;
-          i += 1;
-          break;
-        }
-        i += 1;
-      }
-      if (!closed) {
-        return null; // 閉じられていない文字列 → 走査失敗
-      }
-
-      let value: string;
-      try {
-        value = JSON.parse(content.slice(start, i)) as string;
-      } catch {
-        return null; // 不正なエスケープなど → 走査失敗
-      }
-
-      // 次の非空白文字が ':' ならこの文字列はオブジェクトのキー
-      let j = i;
-      while (j < length && isWhitespace(content[j])) {
-        j += 1;
-      }
-      if (content[j] !== ':') {
-        continue; // キーではなく値の文字列
-      }
-
-      if (depth === 1 && value === 'patterns' && !sawPatternsKey) {
-        // トップレベルの "patterns" キーを発見。値がオブジェクトであることを確認する
-        j += 1; // ':' をスキップ
-        while (j < length && isWhitespace(content[j])) {
-          j += 1;
-        }
-        if (content[j] !== '{') {
-          return null; // patterns の値がオブジェクトでない → 走査失敗
-        }
-        sawPatternsKey = true;
-        inPatterns = true;
-        depth += 1; // patterns の '{' を消費
-        patternsDepth = depth;
-        i = j + 1;
-        continue;
-      }
-
-      if (inPatterns && depth === patternsDepth) {
-        keys.push(value); // patterns 直下のパターンキー
-      }
-      continue;
-    }
-
-    if (ch === '{' || ch === '[') {
-      depth += 1;
-    } else if (ch === '}' || ch === ']') {
-      depth -= 1;
-      if (inPatterns && depth < patternsDepth) {
-        inPatterns = false; // patterns オブジェクトが閉じた
-      }
-    }
-    i += 1;
-  }
-
-  if (inPatterns) {
-    return null; // patterns オブジェクトが閉じられないままテキストが終わった
-  }
-  return sawPatternsKey ? keys : null;
+function buildPatternsArrayMigrationError(configPath: string): Error {
+  return new Error(
+    `Invalid .rawimagerc at "${configPath}": "patterns" must be an array. ` +
+      'The object-keyed format (e.g. "patterns": { "*": { "width": 1920, "height": 1080 } }) ' +
+      'is no longer supported. Migrate each entry to an array item with an explicit "match" field, for example:\n' +
+      '{\n' +
+      '  "patterns": [\n' +
+      '    { "match": "*", "width": 1920, "height": 1080, "format": "rgb24" },\n' +
+      '    { "match": "**/thumbnails/*.bin", "width": 128, "height": 128 }\n' +
+      '  ]\n' +
+      '}'
+  );
 }
 
 /**
- * スキャナが求めたソース順のキー列と、JSON.parse 済みオブジェクトのキー集合を
- * 突き合わせます。完全に一致する場合のみソース順を採用し、それ以外
- * （スキャン失敗・重複キー・集合の不一致）は Object.entries 順へ
- * フォールバックします。
+ * patterns 配列の1エントリの "match" フィールドを検証します。
+ * 非空文字列でない場合はエラーをスローします。
  */
-function reconcilePatternKeyOrder(sourceOrder: string[] | null, parsedKeys: string[]): string[] {
-  if (sourceOrder === null) {
-    return parsedKeys;
+function validatePatternMatch(value: unknown, index: number, configPath: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(
+      `Invalid .rawimagerc at "${configPath}": "patterns[${index}].match" must be a non-empty string.`
+    );
   }
-
-  // 重複キー（JSON では後の値が勝つ）は最後の出現位置を残して重複排除する
-  const deduped: string[] = [];
-  const seen = new Set<string>();
-  for (let i = sourceOrder.length - 1; i >= 0; i--) {
-    if (!seen.has(sourceOrder[i])) {
-      seen.add(sourceOrder[i]);
-      deduped.unshift(sourceOrder[i]);
-    }
-  }
-
-  if (deduped.length !== parsedKeys.length) {
-    return parsedKeys;
-  }
-  const parsedKeySet = new Set(parsedKeys);
-  for (const key of deduped) {
-    if (!parsedKeySet.has(key)) {
-      return parsedKeys;
-    }
-  }
-  return deduped;
+  return value;
 }
 
 /**
  * .rawimagerc の JSON 文字列をパースして RawImageConfig を返します。
  *
- * patterns オブジェクト内のグロブパターンを targetFilePath と照合し、
- * マッチしたパターンの設定を後勝ちでマージします。
+ * patterns 配列の各エントリの "match" グロブパターンを targetFilePath と照合し、
+ * マッチしたエントリの設定を配列順に後勝ちでマージします。
  *
  * @param content       .rawimagerc ファイルの内容（JSON 文字列）
  * @param configPath    .rawimagerc のファイルパス（エラーメッセージ用）
@@ -398,20 +288,30 @@ export function parseRawImageConfig(
     format?: RawImageFormat;
   } = {};
 
-  if (parsed.patterns && !isOutsideConfigDir) {
-    const patterns = parsed.patterns;
-    // Object.keys はドキュメント仕様（ファイル記述順で後勝ち）に反して
-    // 整数風キーを先頭へ並べ替えるため、生テキストから求めたソース順を優先する
-    const orderedKeys = reconcilePatternKeyOrder(
-      extractPatternKeyOrder(content),
-      Object.keys(patterns)
-    );
-    for (const pattern of orderedKeys) {
-      const override = patterns[pattern];
-      if (override !== undefined && globToRegExp(pattern).test(relativePath)) {
-        Object.assign(resolved, override);
-      }
+  if (parsed.patterns !== undefined) {
+    if (!Array.isArray(parsed.patterns)) {
+      throw buildPatternsArrayMigrationError(configPath);
     }
+
+    parsed.patterns.forEach((entry: unknown, index: number) => {
+      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+        throw new Error(
+          `Invalid .rawimagerc at "${configPath}": "patterns[${index}]" must be an object.`
+        );
+      }
+      const record = entry as Record<string, unknown>;
+      const match = validatePatternMatch(record.match, index, configPath);
+
+      // 対象ファイルが configDir の外側にある場合はどのパターンにもマッチさせない
+      // （構文の妥当性検証は行うが、マージには反映しない）
+      if (isOutsideConfigDir || !globToRegExp(match).test(relativePath)) {
+        return;
+      }
+
+      // 配列の後方が勝つ後勝ちマージ。"match" 自体はマージ対象から除く
+      const { match: _match, ...overrides } = record;
+      Object.assign(resolved, overrides);
+    });
   }
 
   const width = validatePositiveInteger(resolved.width, 'width', configPath);

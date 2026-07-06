@@ -6,6 +6,18 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **`.rawimagerc`'s `patterns` is now an array, not an object.** Each entry requires an explicit `"match"` glob field; when multiple entries match the same file, fields are merged with **later array entries winning** (this replaces the previous "later object key wins" rule, which required scanning the raw source text to recover a deterministic order). The old object-keyed form is rejected with a migration error. Example migration:
+
+  ```json
+  // Before
+  { "patterns": { "*": { "width": 1920, "height": 1080, "format": "rgb24" } } }
+
+  // After
+  { "patterns": [{ "match": "*", "width": 1920, "height": 1080, "format": "rgb24" }] }
+  ```
+
 ### Added
 
 - **Colormap selector** for grayscale-family formats (`gray8`, `gray16le`, `gray16be`, `depth16`, `float32`) — choose between Grayscale (default), Jet, Viridis, and Hot, applied after window/level normalization

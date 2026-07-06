@@ -24,7 +24,6 @@ import {
 
 // 設定関連の関数は config.ts から
 import {
-  extractPatternKeyOrder,
   findConfigPath,
   getConfigSearchDirectories,
   inferRawImageConfigFromFilename,
@@ -58,7 +57,7 @@ suite('Extension Test Suite', () => {
   test('parseRawImageConfig applies defaults', () => {
     assert.deepStrictEqual(
       parseRawImageConfig(
-        JSON.stringify({ patterns: { '*': { width: 64, height: 32 } } }),
+        JSON.stringify({ patterns: [{ match: '*', width: 64, height: 32 }] }),
         'D:\\repo\\.rawimagerc',
         'D:\\repo\\frame.raw'
       ),
@@ -68,10 +67,13 @@ suite('Extension Test Suite', () => {
 
   test('parseRawImageConfig rejects invalid numeric fields', () => {
     const cases: Array<[Record<string, unknown>, RegExp]> = [
-      [{ patterns: { '*': { width: 0, height: 32 } } }, /"width" must be a positive integer/],
-      [{ patterns: { '*': { width: 64, height: -1 } } }, /"height" must be a positive integer/],
+      [{ patterns: [{ match: '*', width: 0, height: 32 }] }, /"width" must be a positive integer/],
       [
-        { patterns: { '*': { width: 64, height: 32, headerSize: 1.5 } } },
+        { patterns: [{ match: '*', width: 64, height: -1 }] },
+        /"height" must be a positive integer/,
+      ],
+      [
+        { patterns: [{ match: '*', width: 64, height: 32, headerSize: 1.5 }] },
         /"headerSize" must be a non-negative integer/,
       ],
     ];
@@ -97,7 +99,7 @@ suite('Extension Test Suite', () => {
     assert.throws(
       () =>
         parseRawImageConfig(
-          JSON.stringify({ patterns: { '*': { width: 64, height: 32, format: 'yuv420' } } }),
+          JSON.stringify({ patterns: [{ match: '*', width: 64, height: 32, format: 'yuv420' }] }),
           'D:\\repo\\.rawimagerc',
           'D:\\repo\\frame.raw'
         ),
@@ -113,13 +115,87 @@ suite('Extension Test Suite', () => {
     assert.deepStrictEqual(
       parseRawImageConfig(
         JSON.stringify({
-          patterns: { '*': { width: 4, height: 2, headerSize: 16, format: 'yuv420p' } },
+          patterns: [{ match: '*', width: 4, height: 2, headerSize: 16, format: 'yuv420p' }],
         }),
         'D:\\repo\\.rawimagerc',
         'D:\\repo\\frame.raw'
       ),
       { width: 4, height: 2, headerSize: 16, format: 'yuv420p' }
     );
+  });
+
+  test('parseRawImageConfig rejects legacy object-keyed patterns with a migration error', () => {
+    assert.throws(
+      () =>
+        parseRawImageConfig(
+          JSON.stringify({ patterns: { '*': { width: 64, height: 32 } } }),
+          'D:\\repo\\.rawimagerc',
+          'D:\\repo\\frame.raw'
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /"patterns" must be an array/);
+        assert.match(error.message, /no longer supported/);
+        assert.match(error.message, /"match": "\*"/);
+        return true;
+      }
+    );
+  });
+
+  test('parseRawImageConfig rejects a pattern entry with a missing or non-string match', () => {
+    const cases: Array<Record<string, unknown>> = [
+      { patterns: [{ width: 64, height: 32 }] },
+      { patterns: [{ match: 42, width: 64, height: 32 }] },
+      { patterns: [{ match: '', width: 64, height: 32 }] },
+    ];
+
+    for (const input of cases) {
+      assert.throws(
+        () =>
+          parseRawImageConfig(
+            JSON.stringify(input),
+            'D:\\repo\\.rawimagerc',
+            'D:\\repo\\frame.raw'
+          ),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /"patterns\[0\]\.match" must be a non-empty string/);
+          return true;
+        }
+      );
+    }
+  });
+
+  test('parseRawImageConfig treats an empty patterns array as no match (unresolved width/height)', () => {
+    assert.throws(
+      () =>
+        parseRawImageConfig(
+          JSON.stringify({ patterns: [] }),
+          'D:\\repo\\.rawimagerc',
+          'D:\\repo\\frame.raw'
+        ),
+      /"width" must be a positive integer/
+    );
+  });
+
+  test('parseRawImageConfig merges duplicate match entries with array-order last-wins', () => {
+    // 同一の match を持つエントリが重複していても、単純に配列順で後勝ちマージされる。
+    const config = {
+      patterns: [
+        { match: '*', width: 100, height: 100, format: 'rgb24' },
+        { match: '*', format: 'gray8' },
+        { match: '*', width: 200 },
+      ],
+    };
+    const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
+    const target = process.platform === 'win32' ? 'C:\\repo\\frame.raw' : '/repo/frame.raw';
+
+    assert.deepStrictEqual(parseRawImageConfig(JSON.stringify(config), configPath, target), {
+      width: 200,
+      height: 100,
+      headerSize: 0,
+      format: 'gray8',
+    });
   });
 
   test('getLocalResourceRoots includes config ancestor and extension webview dir', () => {
@@ -735,19 +811,22 @@ suite('Extension Test Suite', () => {
 
   test('parseRawImageConfig applies glob pattern overrides', () => {
     const config = {
-      patterns: {
-        '*': {
+      patterns: [
+        {
+          match: '*',
           width: 100,
           height: 100,
         },
-        '**/thumbnails/*.bin': {
+        {
+          match: '**/thumbnails/*.bin',
           width: 32,
           height: 32,
         },
-        '*.depth': {
+        {
+          match: '*.depth',
           format: 'depth16',
         },
-      },
+      ],
     };
     const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
 
@@ -786,10 +865,10 @@ suite('Extension Test Suite', () => {
     // **/thumbnails/*.bin must match thumbnails/icon.bin (no leading path segment),
     // not just sub/thumbnails/icon.bin — this was a bug in the original globToRegExp.
     const config = {
-      patterns: {
-        '*': { width: 100, height: 100 },
-        '**/thumbnails/*.bin': { width: 32, height: 32 },
-      },
+      patterns: [
+        { match: '*', width: 100, height: 100 },
+        { match: '**/thumbnails/*.bin', width: 32, height: 32 },
+      ],
     };
     const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
 
@@ -820,7 +899,7 @@ suite('Extension Test Suite', () => {
     // 対象ファイルが configDir の外側（相対パスが ".." 始まり）にある場合、
     // "**" のような広いパターンでも誤ってマッチしてはならない。
     // Windows のクロスドライブ（path.relative が絶対パスを返す）も同じガードで防ぐ。
-    const config = { patterns: { '**': { width: 100, height: 100 } } };
+    const config = { patterns: [{ match: '**', width: 100, height: 100 }] };
     const configPath =
       process.platform === 'win32' ? 'C:\\repo\\sub\\.rawimagerc' : '/repo/sub/.rawimagerc';
     const outsideFile = process.platform === 'win32' ? 'C:\\repo\\other.raw' : '/repo/other.raw';
@@ -832,17 +911,15 @@ suite('Extension Test Suite', () => {
     );
   });
 
-  test('parseRawImageConfig respects source order for integer-like keys (last-wins)', () => {
-    // 整数風キー（"12"）を "*" より後に記述した場合、記述順どおり "12" が勝つこと。
-    // JSON.stringify したオブジェクトでは JS が "12" を先頭に並べ替えてしまうため、
-    // 生テキストを直接組み立ててソース順を固定する。
-    const raw =
-      '{\n' +
-      '  "patterns": {\n' +
-      '    "*": { "width": 8, "height": 8, "format": "rgb24" },\n' +
-      '    "12": { "width": 8, "height": 8, "format": "gray8" }\n' +
-      '  }\n' +
-      '}';
+  test('parseRawImageConfig respects array order for last-wins merging', () => {
+    // 配列順は構文上明示されるため、キー名の見た目（例: 数字っぽい文字列）に関わらず
+    // 記述（配列）順どおりに後勝ちする。
+    const raw = JSON.stringify({
+      patterns: [
+        { match: '*', width: 8, height: 8, format: 'rgb24' },
+        { match: '12', width: 8, height: 8, format: 'gray8' },
+      ],
+    });
     const configPath = process.platform === 'win32' ? 'C:\\repo\\.rawimagerc' : '/repo/.rawimagerc';
     // 相対パスが "12" になり、"*" と "12" の両方に一致する
     const target = process.platform === 'win32' ? 'C:\\repo\\12' : '/repo/12';
@@ -851,37 +928,17 @@ suite('Extension Test Suite', () => {
     assert.strictEqual(
       result.format,
       'gray8',
-      'later-in-source pattern ("12") must win over earlier "*"'
+      'later-in-array pattern ("12") must win over earlier "*"'
     );
 
     // 逆順（"12" が先、"*" が後）なら "*" が勝つ
-    const rawReversed =
-      '{\n' +
-      '  "patterns": {\n' +
-      '    "12": { "width": 8, "height": 8, "format": "gray8" },\n' +
-      '    "*": { "width": 8, "height": 8, "format": "rgb24" }\n' +
-      '  }\n' +
-      '}';
+    const rawReversed = JSON.stringify({
+      patterns: [
+        { match: '12', width: 8, height: 8, format: 'gray8' },
+        { match: '*', width: 8, height: 8, format: 'rgb24' },
+      ],
+    });
     assert.strictEqual(parseRawImageConfig(rawReversed, configPath, target).format, 'rgb24');
-  });
-
-  test('extractPatternKeyOrder returns keys in source order handling braces and escapes', () => {
-    const raw =
-      '{\n' +
-      '  "patterns": {\n' +
-      '    "*": { "width": 8, "height": 8, "format": "rgb24" },\n' +
-      '    "**/a{b}/*.bin": { "width": 4, "height": 4 },\n' +
-      '    "esc\\"quote": { "width": 2, "height": 2 },\n' +
-      '    "12": { "width": 2, "height": 2 }\n' +
-      '  }\n' +
-      '}';
-    assert.deepStrictEqual(extractPatternKeyOrder(raw), ['*', '**/a{b}/*.bin', 'esc"quote', '12']);
-  });
-
-  test('extractPatternKeyOrder returns null when patterns block is absent or malformed', () => {
-    assert.strictEqual(extractPatternKeyOrder('{ "width": 8 }'), null);
-    assert.strictEqual(extractPatternKeyOrder('{ "patterns": [1, 2] }'), null);
-    assert.strictEqual(extractPatternKeyOrder('{ "patterns": {'), null);
   });
 
   test('rawimagerc.schema.json format enum matches extension supported formats', () => {
@@ -889,7 +946,7 @@ suite('Extension Test Suite', () => {
     const schemaContent = fs.readFileSync(schemaPath, 'utf8');
     const schema = JSON.parse(schemaContent) as {
       definitions: {
-        imageConfig: {
+        patternEntry: {
           properties: {
             format: {
               enum: string[];
@@ -899,10 +956,10 @@ suite('Extension Test Suite', () => {
         };
       };
     };
-    const schemaFormats: string[] = schema.definitions.imageConfig.properties.format.enum;
+    const schemaFormats: string[] = schema.definitions.patternEntry.properties.format.enum;
     assert.deepStrictEqual(schemaFormats, [...supportedFormats]);
     assert.strictEqual(
-      schema.definitions.imageConfig.properties.format.enumDescriptions.length,
+      schema.definitions.patternEntry.properties.format.enumDescriptions.length,
       schemaFormats.length,
       'enumDescriptions count must match enum count'
     );
@@ -914,10 +971,10 @@ suite('Extension Test Suite', () => {
     // ヘルプテーブルと .rawimagerc の補完ヒントで説明が食い違ってしまう。
     const schemaPath = path.join(__dirname, '..', '..', 'schemas', 'rawimagerc.schema.json');
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8')) as {
-      definitions: { imageConfig: { properties: { format: { enumDescriptions: string[] } } } };
+      definitions: { patternEntry: { properties: { format: { enumDescriptions: string[] } } } };
     };
     assert.deepStrictEqual(
-      schema.definitions.imageConfig.properties.format.enumDescriptions,
+      schema.definitions.patternEntry.properties.format.enumDescriptions,
       rawImageFormatDescriptorList.map((descriptor) => descriptor.description)
     );
   });
@@ -963,7 +1020,7 @@ suite('Extension Test Suite', () => {
       fs.writeFileSync(
         configPath,
         JSON.stringify({
-          patterns: { '**': { width: 12, height: 34, headerSize: 2, format: 'gray8' } },
+          patterns: [{ match: '**', width: 12, height: 34, headerSize: 2, format: 'gray8' }],
         }),
         'utf8'
       );
