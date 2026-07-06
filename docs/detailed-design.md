@@ -27,11 +27,11 @@
 
 すべてのピクセルフォーマットの性質(1ピクセルあたりのバイト数、ストリーミングデコード対応可否、グレースケールストリーム対応可否、偶数幅/高さ制約、必要バイト数の計算式、説明文)は `src/formats.ts` の `rawImageFormatDescriptors`(`Record<RawImageFormat, RawImageFormatDescriptor>`)という単一テーブルに集約されている。`types.ts` の `supportedFormats` / `streamDecodableFormats` / `grayscaleStreamFormats`、`decoder.ts` のデコード処理、Webview のヘルプテーブル(設定未検出時に表示される対応フォーマット一覧)は、いずれもこのテーブルから導出される。
 
-| カテゴリ   | フォーマット                         | Bytes/Pixel | ストリーミング | 備考                                          |
-| :--------- | :----------------------------------- | :---------- | :------------- | :-------------------------------------------- |
-| Grayscale  | `gray8`, `gray16le`, `gray16be`      | 1, 2        | ○              | 8/16-bit グレー。ウィンドウ/レベル対象         |
-| RGB/BGR    | `rgb24`, `bgr24`, `rgba32`, `bgra32` | 3, 4        | ○              | インターリーブ形式                            |
-| YUV        | `yuv420p`, `nv12`, `yuyv422`         | 1.5 - 2     | ×              | Planar/Semi-planar/Packed。偶数幅(・高さ)必須 |
+| カテゴリ   | フォーマット                         | Bytes/Pixel | ストリーミング  | 備考                                          |
+| :--------- | :----------------------------------- | :---------- | :-------------- | :-------------------------------------------- |
+| Grayscale  | `gray8`, `gray16le`, `gray16be`      | 1, 2        | ○               | 8/16-bit グレー。ウィンドウ/レベル対象        |
+| RGB/BGR    | `rgb24`, `bgr24`, `rgba32`, `bgra32` | 3, 4        | ○               | インターリーブ形式                            |
+| YUV        | `yuv420p`, `nv12`, `yuyv422`         | 1.5 - 2     | ×               | Planar/Semi-planar/Packed。偶数幅(・高さ)必須 |
 | Scientific | `float32`, `depth16`                 | 4, 2        | × / ○ (depth16) | 自動ウィンドウ/レベル                         |
 
 新しいピクセルフォーマットを追加する場合、`src/formats.ts` の記述子テーブルに 1 エントリを追加する(併せて `types.ts` の `RawImageFormat` 系型エイリアス、`schemas/rawimagerc.schema.json` と `package.json` の enum も更新が必要。これらの整合はテストで機械的に検証される)。詳細は [AGENTS.md](../AGENTS.md) を参照。

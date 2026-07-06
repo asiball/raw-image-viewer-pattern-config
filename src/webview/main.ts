@@ -24,6 +24,7 @@ import {
   createRawImageDecodeState,
   decodeRawImageToRgba,
 } from '../decoder';
+import { getRawImageFormatDescriptor, rawImageFormatDescriptorList } from '../formats';
 import { grayscaleStreamFormats, streamDecodableFormats } from '../types';
 import type {
   ExtensionToWebviewMessage,
@@ -185,6 +186,23 @@ function escapeHtml(str: unknown): string {
     .replace(/"/g, '&quot;');
 }
 
+// 設定未検出時のヘルプテーブルの行を、`src/formats.ts` の記述子テーブルから生成する
+// （フォーマットを追加してもここを手で更新する必要がないようにするため）。
+function buildFormatHelpTableRows(): string {
+  return rawImageFormatDescriptorList
+    .map(
+      (descriptor) =>
+        '<tr><td><code>' +
+        escapeHtml(descriptor.name) +
+        '</code></td><td>' +
+        escapeHtml(descriptor.description) +
+        '</td><td>' +
+        descriptor.bytesPerPixel +
+        '</td></tr>'
+    )
+    .join('');
+}
+
 function showRuntimeError(err: unknown): void {
   const root = document.getElementById('root');
   if (!root) {
@@ -244,18 +262,7 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
       '<p>Supported formats:</p>' +
       '<table>' +
       '<tr><th>Format</th><th>Description</th><th>Bytes/pixel</th></tr>' +
-      '<tr><td><code>gray8</code></td><td>8-bit grayscale</td><td>1</td></tr>' +
-      '<tr><td><code>gray16le</code></td><td>16-bit grayscale (little-endian)</td><td>2</td></tr>' +
-      '<tr><td><code>gray16be</code></td><td>16-bit grayscale (big-endian)</td><td>2</td></tr>' +
-      '<tr><td><code>rgb24</code></td><td>24-bit RGB</td><td>3</td></tr>' +
-      '<tr><td><code>bgr24</code></td><td>24-bit BGR</td><td>3</td></tr>' +
-      '<tr><td><code>rgba32</code></td><td>32-bit RGBA</td><td>4</td></tr>' +
-      '<tr><td><code>bgra32</code></td><td>32-bit BGRA</td><td>4</td></tr>' +
-      '<tr><td><code>yuv420p</code></td><td>Planar YUV 4:2:0</td><td>1.5</td></tr>' +
-      '<tr><td><code>nv12</code></td><td>Semi-planar YUV 4:2:0</td><td>1.5</td></tr>' +
-      '<tr><td><code>yuyv422</code></td><td>Packed YUV 4:2:2</td><td>2</td></tr>' +
-      '<tr><td><code>float32</code></td><td>32-bit float grayscale</td><td>4</td></tr>' +
-      '<tr><td><code>depth16</code></td><td>16-bit depth (little-endian)</td><td>2</td></tr>' +
+      buildFormatHelpTableRows() +
       '</table>' +
       '</div>';
     return;
@@ -270,6 +277,29 @@ window.addEventListener('message', (event: MessageEvent<unknown>) => {
     root.className = 'center';
     root.innerHTML =
       '<div class="error-box" role="alert"><strong>Error:</strong> Missing file URI for webview fetch.</div>';
+    return;
+  }
+
+  // デコードを開始する前に、ファイルサイズがこのフォーマット・解像度に必要な
+  // 最小バイト数を満たしているか検証する。以前はストリーミング系フォーマットや
+  // yuyv422 はここでチェックせず、データ不足時に無警告で黒画像を表示していた。
+  // headerSize が fileSize 以上の場合も「利用可能バイト数 0」として扱う。
+  const requiredBytesForFormat = getRawImageFormatDescriptor(format).requiredBytes(width, height);
+  const availableBytes = fileSize - headerSize;
+  if (availableBytes < requiredBytesForFormat) {
+    root.className = 'center';
+    root.innerHTML =
+      '<div class="error-box" role="alert"><strong>Error:</strong> Insufficient data: ' +
+      escapeHtml(format) +
+      ' ' +
+      width +
+      'x' +
+      height +
+      ' requires ' +
+      requiredBytesForFormat +
+      ' bytes, file has ' +
+      Math.max(0, availableBytes) +
+      ' bytes after header.</div>';
     return;
   }
 

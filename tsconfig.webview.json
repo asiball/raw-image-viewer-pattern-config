@@ -10,5 +10,5 @@
     "types": [],
     "noEmit": true
   },
-  "include": ["src/webview/**/*.ts", "src/decoder.ts", "src/types.ts"]
+  "include": ["src/webview/**/*.ts", "src/decoder.ts", "src/types.ts", "src/formats.ts"]
 }

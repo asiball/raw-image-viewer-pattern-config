@@ -34,8 +34,11 @@ import {
 } from '../config';
 
 // 型定数は types.ts から
-import { supportedFormats } from '../types';
+import { grayscaleStreamFormats, streamDecodableFormats, supportedFormats } from '../types';
 import type { GrayscaleStreamFormat, StreamDecodableRawImageFormat } from '../types';
+
+// フォーマット記述子テーブルは formats.ts から
+import { rawImageFormatDescriptorList } from '../formats';
 
 // VS Code 統合層の関数は extension.ts から
 import {
@@ -479,6 +482,121 @@ suite('Extension Test Suite', () => {
     assert.deepStrictEqual(Array.from(rgba), [0, 0, 0, 255, 255, 255, 255, 255]);
   });
 
+  test('decodeRawImageToRgba: yuv420p (planar) and nv12 (semi-planar) agree on a 4x4 frame with 4 distinct chroma blocks', () => {
+    // レビュー指摘対応: 従来の 2x2 テスト(クロマブロック 1 個)では、プレーナー形式と
+    // セミプレーナー形式のクロマアドレッシングの違いを検出できなかった。4x4(クロマ
+    // ブロック 2x2 = 4 個)にして、各ブロックに異なる (U, V) を割り当てることで
+    // アドレッシングの取り違えが起きれば必ずテストが失敗するようにする。
+    const width = 4;
+    const height = 4;
+    const totalPixels = width * height;
+    // 輝度は全ピクセル共通の定数にし、色の違いがクロマブロックだけに由来するようにする
+    const luma = new Array<number>(totalPixels).fill(180);
+    // 2x2 のクロマブロック(cx, cy)ごとに異なる (U, V) を割り当てる
+    const chromaUV: Array<[number, number]> = [
+      [90, 100], // (cx=0, cy=0)
+      [140, 110], // (cx=1, cy=0)
+      [160, 200], // (cx=0, cy=1)
+      [60, 50], // (cx=1, cy=1)
+    ];
+    const chromaAt = (cx: number, cy: number): [number, number] => chromaUV[cy * 2 + cx];
+
+    // yuv420p: Y面(16バイト) → U面(2x2=4バイト、行優先) → V面(2x2=4バイト、行優先)
+    const yuv420pBytes = new Uint8Array(totalPixels + 4 + 4);
+    yuv420pBytes.set(luma, 0);
+    for (let cy = 0; cy < 2; cy++) {
+      for (let cx = 0; cx < 2; cx++) {
+        const [u, v] = chromaAt(cx, cy);
+        yuv420pBytes[totalPixels + cy * 2 + cx] = u;
+        yuv420pBytes[totalPixels + 4 + cy * 2 + cx] = v;
+      }
+    }
+
+    // nv12: Y面(16バイト) → UV面(width=4 × height/2=2 行、U/V がインターリーブ)
+    const nv12Bytes = new Uint8Array(totalPixels + totalPixels / 2);
+    nv12Bytes.set(luma, 0);
+    for (let cy = 0; cy < 2; cy++) {
+      for (let cx = 0; cx < 2; cx++) {
+        const [u, v] = chromaAt(cx, cy);
+        const base = totalPixels + cy * width + cx * 2;
+        nv12Bytes[base] = u;
+        nv12Bytes[base + 1] = v;
+      }
+    }
+
+    const planarRgba = decodeRawImageToRgba(yuv420pBytes, width, height, 'yuv420p');
+    const semiRgba = decodeRawImageToRgba(nv12Bytes, width, height, 'nv12');
+
+    assert.deepStrictEqual(
+      Array.from(planarRgba),
+      Array.from(semiRgba),
+      'planar (yuv420p) and semi-planar (nv12) encodings of an equivalent frame must decode identically'
+    );
+
+    // 4つのクロマブロックが互いに異なる色であることを確認する
+    // (アドレッシングのバグで全ブロックが同じ値を読んでしまうケースを検出するため)
+    const topLeftPixelIndex = (cx: number, cy: number): number => cy * 2 * width + cx * 2;
+    const blockColors = [
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      [1, 1],
+    ].map(([cx, cy]) => {
+      const idx = topLeftPixelIndex(cx, cy) * 4;
+      return [planarRgba[idx], planarRgba[idx + 1], planarRgba[idx + 2]].join(',');
+    });
+    assert.strictEqual(
+      new Set(blockColors).size,
+      4,
+      'expected 4 distinct chroma-driven colors, one per 2x2 quadrant'
+    );
+
+    // 輝度が一定なので、各クロマブロック内の全ピクセルは同じ色になるはずである
+    for (let cy = 0; cy < 2; cy++) {
+      for (let cx = 0; cx < 2; cx++) {
+        const expectedIdx = topLeftPixelIndex(cx, cy) * 4;
+        const expected = [
+          planarRgba[expectedIdx],
+          planarRgba[expectedIdx + 1],
+          planarRgba[expectedIdx + 2],
+        ];
+        for (let dy = 0; dy < 2; dy++) {
+          for (let dx = 0; dx < 2; dx++) {
+            const x = cx * 2 + dx;
+            const y = cy * 2 + dy;
+            const idx = (y * width + x) * 4;
+            assert.deepStrictEqual(
+              [planarRgba[idx], planarRgba[idx + 1], planarRgba[idx + 2]],
+              expected,
+              `pixel (${x},${y}) should match quadrant (${cx},${cy}) color`
+            );
+          }
+        }
+      }
+    }
+  });
+
+  test('decodeRawImageToRgba throws when the buffer is short by 1 byte and succeeds at the exact required length (all formats)', () => {
+    const width = 4;
+    const height = 4;
+    for (const descriptor of rawImageFormatDescriptorList) {
+      const required = descriptor.requiredBytes(width, height);
+
+      const shortBuffer = new Uint8Array(Math.max(0, required - 1));
+      assert.throws(
+        () => decodeRawImageToRgba(shortBuffer, width, height, descriptor.name),
+        new RegExp(descriptor.name),
+        `${descriptor.name}: expected a throw when the buffer is short by 1 byte`
+      );
+
+      const exactBuffer = new Uint8Array(required);
+      assert.doesNotThrow(
+        () => decodeRawImageToRgba(exactBuffer, width, height, descriptor.name),
+        `${descriptor.name}: expected success at the exact required length (${required} bytes)`
+      );
+    }
+  });
+
   test('decodeRawImageToRgba validates YUV frame geometry', () => {
     assert.throws(
       () => decodeRawImageToRgba(new Uint8Array([0, 0, 0]), 3, 2, 'yuv420p'),
@@ -787,6 +905,37 @@ suite('Extension Test Suite', () => {
       schema.definitions.imageConfig.properties.format.enumDescriptions.length,
       schemaFormats.length,
       'enumDescriptions count must match enum count'
+    );
+  });
+
+  test('rawimagerc.schema.json enumDescriptions match the src/formats.ts descriptor table', () => {
+    // スキーマの enumDescriptions と、Webview ヘルプテーブルが参照する
+    // formats.ts の description は同じ文言を使う設計。乖離すると Webview の
+    // ヘルプテーブルと .rawimagerc の補完ヒントで説明が食い違ってしまう。
+    const schemaPath = path.join(__dirname, '..', '..', 'schemas', 'rawimagerc.schema.json');
+    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8')) as {
+      definitions: { imageConfig: { properties: { format: { enumDescriptions: string[] } } } };
+    };
+    assert.deepStrictEqual(
+      schema.definitions.imageConfig.properties.format.enumDescriptions,
+      rawImageFormatDescriptorList.map((descriptor) => descriptor.description)
+    );
+  });
+
+  test('supportedFormats/streamDecodableFormats/grayscaleStreamFormats are derived from the src/formats.ts descriptor table', () => {
+    assert.deepStrictEqual(
+      [...supportedFormats],
+      rawImageFormatDescriptorList.map((descriptor) => descriptor.name)
+    );
+    assert.deepStrictEqual(
+      [...streamDecodableFormats],
+      rawImageFormatDescriptorList.filter((descriptor) => descriptor.streamable).map((d) => d.name)
+    );
+    assert.deepStrictEqual(
+      [...grayscaleStreamFormats],
+      rawImageFormatDescriptorList
+        .filter((descriptor) => descriptor.grayscaleStream)
+        .map((d) => d.name)
     );
   });
 
@@ -1248,6 +1397,41 @@ suite('Extension Test Suite', () => {
         String(root.innerHTML).includes('No .rawimagerc'),
         'expected the no-config guide to be rendered'
       );
+    });
+
+    test('render message with insufficient file data shows an explicit error instead of decoding', () => {
+      // フォーマット・解像度に対してファイルが小さすぎる場合、以前はストリーミング系
+      // フォーマットで無警告の黒画像になっていた。fetch が一切呼ばれないこと(= デコードに
+      // 入らないこと)と、明示的なエラーメッセージが表示されることの両方を検証する。
+      let fetchCalled = false;
+      const fetchStub = () => {
+        fetchCalled = true;
+        return Promise.reject(new Error('fetch should not be called when data is insufficient'));
+      };
+
+      const { dispatchMessage, root } = runWebviewScript(fetchStub as never);
+
+      assert.doesNotThrow(() => {
+        dispatchMessage({
+          type: 'render',
+          // gray8 は 4x4 = 16 バイト必要だが、ファイルは 4 バイトしかない
+          config: { width: 4, height: 4, headerSize: 0, format: 'gray8' },
+          configSource: 'rawimagerc',
+          fileUri: 'x',
+          fileSize: 4,
+        });
+      });
+
+      assert.strictEqual(
+        fetchCalled,
+        false,
+        'expected decoding not to start when data is insufficient'
+      );
+      assert.ok(
+        String(root.innerHTML).includes('Insufficient data'),
+        'expected an explicit insufficient-data error message'
+      );
+      assert.ok(String(root.innerHTML).includes('gray8'), 'expected the format name in the error');
     });
 
     test('error message does not throw and displays the error text', () => {

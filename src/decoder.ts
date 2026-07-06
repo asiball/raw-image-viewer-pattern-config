@@ -5,13 +5,17 @@
  * すべてここに集めています。
  *
  * 重要な設計上の注意:
- * このファイルの関数は VS Code の Webview（画像を表示する内側の画面）にも
- * JavaScript の文字列として埋め込まれます。そのため：
- * - アロー関数（`() => {}`）ではなく `function` キーワードで書く必要があります
- *   （`.toString()` でソースコードを取り出したときにそのまま動くため）
+ * このファイルの関数は VS Code の Webview（画像を表示する内側の画面）からも
+ * `src/webview/main.ts` を経由した ES import で直接呼び出されます
+ * （esbuild で `out/webview/main.js` にバンドルされる）。そのため：
  * - VS Code API や Node.js 固有の機能は使えません（ブラウザでも動く必要があるため）
+ * - 各フォーマットの性質（バイト数・制約・必要バイト数の計算式など）は
+ *   `src/formats.ts` の記述子テーブルに集約されており、このファイルは
+ *   そのテーブルを参照してデコードを行います
  */
 
+import { getRawImageFormatDescriptor } from './formats';
+import type { RawImageFormatDescriptor } from './formats';
 import type {
   Float32DecodeState,
   GrayDecodeState,
@@ -28,21 +32,11 @@ import type {
 /**
  * 1ピクセルあたりのバイト数を返します。
  * 例: 'rgb24' → 3バイト（R, G, B それぞれ1バイト）
+ *
+ * `src/formats.ts` の記述子テーブルを参照します。
  */
 export function getBytesPerPixel(format: StreamDecodableRawImageFormat): number {
-  switch (format) {
-    case 'gray8':
-      return 1;
-    case 'gray16le':
-    case 'gray16be':
-      return 2;
-    case 'rgb24':
-    case 'bgr24':
-      return 3;
-    case 'rgba32':
-    case 'bgra32':
-      return 4;
-  }
+  return getRawImageFormatDescriptor(format).bytesPerPixel;
 }
 
 /**
@@ -53,7 +47,7 @@ export function getBytesPerPixel(format: StreamDecodableRawImageFormat): number 
  * 単一実装です。gray16le / depth16 はリトルエンディアン、gray16be は
  * ビッグエンディアンとして呼び出します。
  *
- * この関数は Webview にも `.toString()` で埋め込まれます（webviewHtml.ts）。
+ * この関数は src/webview/main.ts からも ES import で直接呼び出されます。
  */
 export function combineGray16Bytes(byte0: number, byte1: number, littleEndian: boolean): number {
   return littleEndian ? (byte1 << 8) | byte0 : (byte0 << 8) | byte1;
@@ -63,7 +57,7 @@ export function combineGray16Bytes(byte0: number, byte1: number, littleEndian: b
  * バイト列の offset 位置から16ビットグレー値を読み取ります。
  * 範囲外のバイトは 0 として扱います（チャンク終端の安全策）。
  *
- * この関数は Webview にも `.toString()` で埋め込まれます（webviewHtml.ts）。
+ * この関数は src/webview/main.ts からも ES import で直接呼び出されます。
  */
 export function readGray16Sample(
   source: Uint8Array,
@@ -429,12 +423,329 @@ export function appendFloat32Chunk(state: Float32DecodeState, chunk: Uint8Array)
 // 一括デコード（ストリーミングを使わない場合のフォールバック）
 // =============================================================================
 
+// 0〜255 の範囲に収める
+function clampToByte(value: number): number {
+  return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function writePixel(
+  pixels: Uint8ClampedArray,
+  pixelIndex: number,
+  r: number,
+  g: number,
+  b: number,
+  a = 255
+): void {
+  const offset = pixelIndex * 4;
+  pixels[offset] = clampToByte(r);
+  pixels[offset + 1] = clampToByte(g);
+  pixels[offset + 2] = clampToByte(b);
+  pixels[offset + 3] = clampToByte(a);
+}
+
+// YUV → RGB 変換（ITU-R BT.601 の係数）
+function writeYuvPixel(
+  pixels: Uint8ClampedArray,
+  pixelIndex: number,
+  y: number,
+  u: number,
+  v: number
+): void {
+  const c = Math.max(0, y - 16);
+  const d = u - 128;
+  const e = v - 128;
+  writePixel(
+    pixels,
+    pixelIndex,
+    (298 * c + 409 * e + 128) >> 8,
+    (298 * c - 100 * d - 208 * e + 128) >> 8,
+    (298 * c + 516 * d + 128) >> 8
+  );
+}
+
+/**
+ * フォーマット 1 個分の一括デコード処理のシグネチャ。
+ * `requiredBytes`/偶数制約のチェックは呼び出し側（decodeRawImageToRgba）で
+ * 事前に済ませてあるため、ここでは変換ロジックだけを担う。
+ */
+type RawImageBatchDecodeFn = (
+  pixelData: Uint8Array,
+  width: number,
+  height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+) => void;
+
+function decodeGray8Batch(
+  pixelData: Uint8Array,
+  _width: number,
+  _height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+): void {
+  for (let p = 0; p < totalPixels && p < pixelData.length; p++) {
+    const value = pixelData[p];
+    writePixel(pixels, p, value, value, value);
+  }
+}
+
+// 16ビットグレー系はエンディアンだけが異なる（depth16 は gray16le と同じリトルエンディアン構造）。
+// バイト結合はストリーミング経路と共有の readGray16Sample() に委譲する。
+function makeGray16Batch(littleEndian: boolean): RawImageBatchDecodeFn {
+  return (pixelData, _width, _height, totalPixels, pixels) => {
+    for (
+      let p = 0, srcIdx = 0;
+      p < totalPixels && srcIdx + 1 < pixelData.length;
+      p++, srcIdx += 2
+    ) {
+      const value = readGray16Sample(pixelData, srcIdx, littleEndian) >> 8;
+      writePixel(pixels, p, value, value, value);
+    }
+  };
+}
+
+function decodeRgb24Batch(
+  pixelData: Uint8Array,
+  _width: number,
+  _height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+): void {
+  for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 2 < pixelData.length; p++, srcIdx += 3) {
+    writePixel(pixels, p, pixelData[srcIdx], pixelData[srcIdx + 1], pixelData[srcIdx + 2]);
+  }
+}
+
+function decodeBgr24Batch(
+  pixelData: Uint8Array,
+  _width: number,
+  _height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+): void {
+  for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 2 < pixelData.length; p++, srcIdx += 3) {
+    writePixel(pixels, p, pixelData[srcIdx + 2], pixelData[srcIdx + 1], pixelData[srcIdx]);
+  }
+}
+
+function decodeRgba32Batch(
+  pixelData: Uint8Array,
+  _width: number,
+  _height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+): void {
+  for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 3 < pixelData.length; p++, srcIdx += 4) {
+    writePixel(
+      pixels,
+      p,
+      pixelData[srcIdx],
+      pixelData[srcIdx + 1],
+      pixelData[srcIdx + 2],
+      pixelData[srcIdx + 3]
+    );
+  }
+}
+
+function decodeBgra32Batch(
+  pixelData: Uint8Array,
+  _width: number,
+  _height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+): void {
+  for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 3 < pixelData.length; p++, srcIdx += 4) {
+    writePixel(
+      pixels,
+      p,
+      pixelData[srcIdx + 2],
+      pixelData[srcIdx + 1],
+      pixelData[srcIdx],
+      pixelData[srcIdx + 3]
+    );
+  }
+}
+
+// プレーナー形式: Y面・U面・V面が別々に並ぶ
+function decodeYuv420pBatch(
+  pixelData: Uint8Array,
+  width: number,
+  height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+): void {
+  const lumaPlaneSize = totalPixels;
+  const chromaPlaneSize = totalPixels / 4;
+  const uOffset = lumaPlaneSize;
+  const vOffset = uOffset + chromaPlaneSize;
+  const chromaWidth = width / 2;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pixelIndex = y * width + x;
+      // 4ピクセルで1つの色差（U/V）を共有する（クロマサブサンプリング）
+      const chromaIndex = Math.floor(y / 2) * chromaWidth + Math.floor(x / 2);
+      writeYuvPixel(
+        pixels,
+        pixelIndex,
+        pixelData[pixelIndex],
+        pixelData[uOffset + chromaIndex],
+        pixelData[vOffset + chromaIndex]
+      );
+    }
+  }
+}
+
+// セミプレーナー形式: Y面の後に UV がインターリーブされる
+function decodeNv12Batch(
+  pixelData: Uint8Array,
+  width: number,
+  height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+): void {
+  const lumaPlaneSize = totalPixels;
+  const uvOffset = lumaPlaneSize;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const pixelIndex = y * width + x;
+      const chromaIndex = uvOffset + Math.floor(y / 2) * width + Math.floor(x / 2) * 2;
+      writeYuvPixel(
+        pixels,
+        pixelIndex,
+        pixelData[pixelIndex],
+        pixelData[chromaIndex],
+        pixelData[chromaIndex + 1]
+      );
+    }
+  }
+}
+
+// パック形式: Y0 U Y1 V の4バイトで2ピクセルを表す
+function decodeYuyv422Batch(
+  pixelData: Uint8Array,
+  _width: number,
+  _height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+): void {
+  for (
+    let p = 0, srcIdx = 0;
+    p + 1 < totalPixels && srcIdx + 3 < pixelData.length;
+    p += 2, srcIdx += 4
+  ) {
+    const y0 = pixelData[srcIdx];
+    const u = pixelData[srcIdx + 1];
+    const y1 = pixelData[srcIdx + 2];
+    const v = pixelData[srcIdx + 3];
+    writeYuvPixel(pixels, p, y0, u, v);
+    writeYuvPixel(pixels, p + 1, y1, u, v);
+  }
+}
+
+// 32ビット浮動小数点: DataView で4バイトをfloatとして読み、値域全体を 0〜255 に正規化する
+function decodeFloat32Batch(
+  pixelData: Uint8Array,
+  _width: number,
+  _height: number,
+  totalPixels: number,
+  pixels: Uint8ClampedArray
+): void {
+  const f32View = new DataView(pixelData.buffer, pixelData.byteOffset, pixelData.byteLength);
+  const floatPixels = new Float32Array(totalPixels);
+  let fMin = Infinity;
+  let fMax = -Infinity;
+  for (let p = 0, srcIdx = 0; p < totalPixels && srcIdx + 3 < pixelData.length; p++, srcIdx += 4) {
+    const value = f32View.getFloat32(srcIdx, true);
+    floatPixels[p] = value;
+    if (isFinite(value)) {
+      if (value < fMin) {
+        fMin = value;
+      }
+      if (value > fMax) {
+        fMax = value;
+      }
+    }
+  }
+  if (!isFinite(fMin) || !isFinite(fMax) || fMin >= fMax) {
+    fMin = 0;
+    fMax = 1;
+  }
+  const fRange = fMax - fMin;
+  for (let p = 0; p < totalPixels; p++) {
+    const val = floatPixels[p];
+    let mapped: number;
+    if (!isFinite(val)) {
+      mapped = 0; // NaN や Infinity は黒として扱う
+    } else {
+      mapped = Math.round(((val - fMin) / fRange) * 255);
+      if (mapped < 0) {
+        mapped = 0;
+      }
+      if (mapped > 255) {
+        mapped = 255;
+      }
+    }
+    writePixel(pixels, p, mapped, mapped, mapped);
+  }
+}
+
+/**
+ * フォーマットごとの一括デコード処理のディスパッチテーブル。
+ * `Record<RawImageFormat, ...>` として書くことで、`RawImageFormat` に
+ * フォーマットを追加した際にエントリの追加漏れがあればコンパイルエラーになる。
+ */
+const rawImageBatchDecoders: Record<RawImageFormat, RawImageBatchDecodeFn> = {
+  gray8: decodeGray8Batch,
+  gray16le: makeGray16Batch(true),
+  gray16be: makeGray16Batch(false),
+  rgb24: decodeRgb24Batch,
+  bgr24: decodeBgr24Batch,
+  rgba32: decodeRgba32Batch,
+  bgra32: decodeBgra32Batch,
+  yuv420p: decodeYuv420pBatch,
+  nv12: decodeNv12Batch,
+  yuyv422: decodeYuyv422Batch,
+  float32: decodeFloat32Batch,
+  depth16: makeGray16Batch(true), // depth16 は gray16le と同じリトルエンディアン構造
+};
+
+/**
+ * 幅・高さの偶数制約（`src/formats.ts` の `evenWidthRequired`/`evenHeightRequired`）を検証する。
+ * 満たさない場合は format 名を含む Error を送出する。
+ */
+function validateEvenDimensions(
+  format: RawImageFormat,
+  descriptor: RawImageFormatDescriptor,
+  width: number,
+  height: number
+): void {
+  if (descriptor.evenWidthRequired && descriptor.evenHeightRequired) {
+    if (width % 2 !== 0 || height % 2 !== 0) {
+      throw new Error(`Format ${format} requires even width and height.`);
+    }
+  } else if (descriptor.evenWidthRequired) {
+    if (width % 2 !== 0) {
+      throw new Error(`Format ${format} requires an even width.`);
+    }
+  } else if (descriptor.evenHeightRequired) {
+    if (height % 2 !== 0) {
+      throw new Error(`Format ${format} requires an even height.`);
+    }
+  }
+}
+
 /**
  * バイナリデータをピクセル配列（RGBA）に一括変換します。
  *
  * ストリーミング対応フォーマット（rgb24 など）は Webview のストリーミングパスで
- * 処理されるため、この関数は YUV 系など残りのフォーマット向けのフォールバックです。
- * また、この関数は `.toString()` で Webview の JavaScript にも埋め込まれます。
+ * 処理されるため、この関数は主に YUV 系など残りのフォーマット向けのフォールバックですが、
+ * 全フォーマットに対して呼び出し可能な汎用実装です。
+ * また、この関数は src/webview/main.ts からも ES import で直接呼び出されます。
+ *
+ * 冒頭で `src/formats.ts` の記述子テーブルを参照し、偶数幅/高さ制約と
+ * 必要バイト数（`requiredBytes(width, height)`）を検証します。データが不足している場合は
+ * 期待バイト数・実バイト数・フォーマット名・解像度を含む Error を送出します
+ * （全フォーマット共通。以前は yuv420p/nv12 のみ明示エラーだった）。
  *
  * @param pixelData ヘッダーを除いたピクセルデータ
  */
@@ -444,232 +755,19 @@ export function decodeRawImageToRgba(
   height: number,
   format: RawImageFormat
 ): Uint8ClampedArray {
+  const descriptor = getRawImageFormatDescriptor(format);
+
+  validateEvenDimensions(format, descriptor, width, height);
+
+  const requiredBytes = descriptor.requiredBytes(width, height);
+  if (pixelData.length < requiredBytes) {
+    throw new Error(
+      `Insufficient data for ${format} ${width}x${height}: expected at least ${requiredBytes} bytes, but found ${pixelData.length}.`
+    );
+  }
+
   const totalPixels = width * height;
   const pixels = new Uint8ClampedArray(totalPixels * 4);
-
-  // 0〜255 の範囲に収める
-  const clampToByte = (value: number): number => Math.max(0, Math.min(255, Math.round(value)));
-
-  const writePixel = (pixelIndex: number, r: number, g: number, b: number, a = 255): void => {
-    const offset = pixelIndex * 4;
-    pixels[offset] = clampToByte(r);
-    pixels[offset + 1] = clampToByte(g);
-    pixels[offset + 2] = clampToByte(b);
-    pixels[offset + 3] = clampToByte(a);
-  };
-
-  // YUV → RGB 変換（ITU-R BT.601 の係数）
-  const writeYuvPixel = (pixelIndex: number, y: number, u: number, v: number): void => {
-    const c = Math.max(0, y - 16);
-    const d = u - 128;
-    const e = v - 128;
-    writePixel(
-      pixelIndex,
-      (298 * c + 409 * e + 128) >> 8,
-      (298 * c - 100 * d - 208 * e + 128) >> 8,
-      (298 * c + 516 * d + 128) >> 8
-    );
-  };
-
-  const requireBytes = (requiredLength: number): void => {
-    if (pixelData.length < requiredLength) {
-      throw new Error(
-        `Expected at least ${requiredLength} bytes for ${width}x${height} ${format}, but found ${pixelData.length}.`
-      );
-    }
-  };
-
-  switch (format) {
-    case 'gray8':
-      for (let p = 0; p < totalPixels && p < pixelData.length; p++) {
-        const value = pixelData[p];
-        writePixel(p, value, value, value);
-      }
-      return pixels;
-
-    case 'gray16le':
-    case 'depth16':
-    case 'gray16be': {
-      // 16ビットグレー系はエンディアンだけが異なる（depth16 は gray16le と同じ構造）。
-      // バイト結合はストリーミング経路と共有の readGray16Sample() に委譲する。
-      const littleEndian = format !== 'gray16be';
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 1 < pixelData.length;
-        p++, srcIdx += 2
-      ) {
-        const value = readGray16Sample(pixelData, srcIdx, littleEndian) >> 8;
-        writePixel(p, value, value, value);
-      }
-      return pixels;
-    }
-
-    case 'rgb24':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 2 < pixelData.length;
-        p++, srcIdx += 3
-      ) {
-        writePixel(p, pixelData[srcIdx], pixelData[srcIdx + 1], pixelData[srcIdx + 2]);
-      }
-      return pixels;
-
-    case 'bgr24':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 2 < pixelData.length;
-        p++, srcIdx += 3
-      ) {
-        writePixel(p, pixelData[srcIdx + 2], pixelData[srcIdx + 1], pixelData[srcIdx]);
-      }
-      return pixels;
-
-    case 'rgba32':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 3 < pixelData.length;
-        p++, srcIdx += 4
-      ) {
-        writePixel(
-          p,
-          pixelData[srcIdx],
-          pixelData[srcIdx + 1],
-          pixelData[srcIdx + 2],
-          pixelData[srcIdx + 3]
-        );
-      }
-      return pixels;
-
-    case 'bgra32':
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 3 < pixelData.length;
-        p++, srcIdx += 4
-      ) {
-        writePixel(
-          p,
-          pixelData[srcIdx + 2],
-          pixelData[srcIdx + 1],
-          pixelData[srcIdx],
-          pixelData[srcIdx + 3]
-        );
-      }
-      return pixels;
-
-    case 'yuv420p': {
-      // プレーナー形式: Y面・U面・V面が別々に並ぶ
-      if (width % 2 !== 0 || height % 2 !== 0) {
-        throw new Error(`Format ${format} requires even width and height.`);
-      }
-      const lumaPlaneSize = totalPixels;
-      const chromaPlaneSize = totalPixels / 4;
-      requireBytes(lumaPlaneSize + chromaPlaneSize * 2);
-      const uOffset = lumaPlaneSize;
-      const vOffset = uOffset + chromaPlaneSize;
-      const chromaWidth = width / 2;
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const pixelIndex = y * width + x;
-          // 4ピクセルで1つの色差（U/V）を共有する（クロマサブサンプリング）
-          const chromaIndex = Math.floor(y / 2) * chromaWidth + Math.floor(x / 2);
-          writeYuvPixel(
-            pixelIndex,
-            pixelData[pixelIndex],
-            pixelData[uOffset + chromaIndex],
-            pixelData[vOffset + chromaIndex]
-          );
-        }
-      }
-      return pixels;
-    }
-
-    case 'nv12': {
-      // セミプレーナー形式: Y面の後に UV がインターリーブされる
-      if (width % 2 !== 0 || height % 2 !== 0) {
-        throw new Error(`Format ${format} requires even width and height.`);
-      }
-      const lumaPlaneSize = totalPixels;
-      requireBytes(lumaPlaneSize + totalPixels / 2);
-      const uvOffset = lumaPlaneSize;
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const pixelIndex = y * width + x;
-          const chromaIndex = uvOffset + Math.floor(y / 2) * width + Math.floor(x / 2) * 2;
-          writeYuvPixel(
-            pixelIndex,
-            pixelData[pixelIndex],
-            pixelData[chromaIndex],
-            pixelData[chromaIndex + 1]
-          );
-        }
-      }
-      return pixels;
-    }
-
-    case 'yuyv422':
-      // パック形式: Y0 U Y1 V の4バイトで2ピクセルを表す
-      if (width % 2 !== 0) {
-        throw new Error(`Format ${format} requires an even width.`);
-      }
-      for (
-        let p = 0, srcIdx = 0;
-        p + 1 < totalPixels && srcIdx + 3 < pixelData.length;
-        p += 2, srcIdx += 4
-      ) {
-        const y0 = pixelData[srcIdx];
-        const u = pixelData[srcIdx + 1];
-        const y1 = pixelData[srcIdx + 2];
-        const v = pixelData[srcIdx + 3];
-        writeYuvPixel(p, y0, u, v);
-        writeYuvPixel(p + 1, y1, u, v);
-      }
-      return pixels;
-
-    case 'float32': {
-      // 32ビット浮動小数点: DataView で4バイトをfloatとして読む
-      const f32View = new DataView(pixelData.buffer, pixelData.byteOffset, pixelData.byteLength);
-      const floatPixels = new Float32Array(totalPixels);
-      let fMin = Infinity;
-      let fMax = -Infinity;
-      for (
-        let p = 0, srcIdx = 0;
-        p < totalPixels && srcIdx + 3 < pixelData.length;
-        p++, srcIdx += 4
-      ) {
-        const value = f32View.getFloat32(srcIdx, true);
-        floatPixels[p] = value;
-        if (isFinite(value)) {
-          if (value < fMin) {
-            fMin = value;
-          }
-          if (value > fMax) {
-            fMax = value;
-          }
-        }
-      }
-      // 値域全体を 0〜255 に正規化する
-      if (!isFinite(fMin) || !isFinite(fMax) || fMin >= fMax) {
-        fMin = 0;
-        fMax = 1;
-      }
-      const fRange = fMax - fMin;
-      for (let p = 0; p < totalPixels; p++) {
-        const val = floatPixels[p];
-        let mapped: number;
-        if (!isFinite(val)) {
-          mapped = 0; // NaN や Infinity は黒として扱う
-        } else {
-          mapped = Math.round(((val - fMin) / fRange) * 255);
-          if (mapped < 0) {
-            mapped = 0;
-          }
-          if (mapped > 255) {
-            mapped = 255;
-          }
-        }
-        writePixel(p, mapped, mapped, mapped);
-      }
-      return pixels;
-    }
-  }
+  rawImageBatchDecoders[format](pixelData, width, height, totalPixels, pixels);
+  return pixels;
 }
