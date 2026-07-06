@@ -4,10 +4,14 @@
 src/**
 test-data/**
 out/test/**
+docs/**
 .gitignore
 .yarnrc
 vsc-extension-quickstart.md
 rawviewer-*.vsix
+AGENTS.md
+CLAUDE.md
+CONTRIBUTING.md
 **/tsconfig.json
 **/eslint.config.mjs
 **/*.map

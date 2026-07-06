@@ -2,12 +2,12 @@
   "name": "raw-image-viewer-pattern-config",
   "displayName": "Raw Image Viewer: Pattern-based configuration",
   "description": "View raw binary image files in VS Code using a .rawimagerc configuration file",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "icon": "images/icon.png",
   "publisher": "asiball",
   "repository": {
     "type": "git",
-    "url": "https://github.com/asiball/vscode-rawimage-viewer"
+    "url": "https://github.com/asiball/raw-image-viewer-pattern-config"
   },
   "engines": {
     "vscode": "^1.90.0"

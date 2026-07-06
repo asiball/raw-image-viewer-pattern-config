@@ -4,9 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       tag_name:
-        description: 'タグ名 (例: v1.0.0)'
+        description: 'タグ名 (例: v1.0.0)。package.json の version と一致していること'
         required: true
-        default: 'v0.0.1'
 
 jobs:
   tag:
@@ -17,6 +16,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate release metadata
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag_name }}
+        run: npm run validate:release
 
       - name: Create and push tag
         run: |
