@@ -74,21 +74,47 @@ class RawImageDocument implements vscode.CustomDocument {
  * `implements` キーワードでその約束を実装することを宣言します。
  */
 class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawImageDocument> {
-  /** VS Code の設定ファイル（package.json）で定義したエディタータイプの識別子 */
+  /**
+   * package.json の customEditors[0] に対応する識別子（priority: "default"）。
+   * raw 画像専用拡張子（.raw/.gray/.yuv）向けで、開くと自動的にこのビューアが起動する。
+   * `rawviewer.openAsRawImage` コマンドもこの viewType を指定する。
+   */
   static readonly viewType = 'rawviewer.rawImageEditor';
+
+  /**
+   * package.json の customEditors[1] に対応する識別子（priority: "option"）。
+   * 汎用バイナリ拡張子（.bin/.data/.img。raw 画像とは限らないファームウェア・
+   * ディスクイメージ等）向けで、自動オープンされず「Open as Raw Image」や
+   * 「Open With...」から明示的に選んだときだけ使われる。
+   */
+  static readonly optionalViewType = 'rawviewer.rawImageEditorOptional';
 
   /**
    * VS Code にカスタムエディターを登録して、返される Disposable を返します。
    * Disposable とは「後で解放できるリソース」のことです。
+   *
+   * 同一の Provider インスタンスを 2 つの viewType（default 側と option 側）で
+   * それぞれ登録する。Webview 生成やデコードのロジックは完全に共通で、
+   * package.json 上の selector と priority だけが異なる。
    */
   static register(context: vscode.ExtensionContext): vscode.Disposable {
-    return vscode.window.registerCustomEditorProvider(
-      RawImageEditorProvider.viewType,
-      new RawImageEditorProvider(context),
-      {
-        supportsMultipleEditorsPerDocument: false,
-        webviewOptions: { retainContextWhenHidden: true },
-      }
+    const provider = new RawImageEditorProvider(context);
+    const providerOptions = {
+      supportsMultipleEditorsPerDocument: false,
+      webviewOptions: { retainContextWhenHidden: true },
+    };
+
+    return vscode.Disposable.from(
+      vscode.window.registerCustomEditorProvider(
+        RawImageEditorProvider.viewType,
+        provider,
+        providerOptions
+      ),
+      vscode.window.registerCustomEditorProvider(
+        RawImageEditorProvider.optionalViewType,
+        provider,
+        providerOptions
+      )
     );
   }
 
