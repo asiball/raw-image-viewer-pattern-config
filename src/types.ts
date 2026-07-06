@@ -1,63 +1,100 @@
 /**
  * types.ts — 型定義ファイル
  *
- * このファイルには「型（Type）」と「インターフェース（Interface）」だけが集まっています。
+ * このファイルには「型（Type）」と「インターフェース（Interface）」が中心に集まっています。
  * TypeScript の型とは「変数やデータがどんな形をしているか」を表すものです。
- * 処理（ロジック）は一切書かず、データ構造の定義のみを行います。
+ *
+ * 唯一の例外として、対応ピクセルフォーマットの一覧（`supportedFormats` など）は
+ * `src/formats.ts` の記述子テーブルから導出した値を再エクスポートしています。
+ * これらの性質（バイト数・ストリーミング対応可否など）自体のロジックは
+ * `src/formats.ts` 側に集約されており、このファイルは型と、その型に対応する
+ * 名前一覧を提供するだけです。
  *
  * 他のファイルは必要な型をここから import して使います。
  */
 
+import {
+  grayscaleStreamFormatNames,
+  rawImageFormatDescriptorList,
+  streamableFormatNames,
+} from './formats';
+
 // =============================================================================
-// サポートするピクセルフォーマット
+// 型エイリアス（対応ピクセルフォーマットの語彙）
 // =============================================================================
+
+/**
+ * すべての対応フォーマットの型。
+ *
+ * ここに列挙される名前が唯一の正となる「語彙」です。各フォーマットの性質
+ * （1ピクセルあたりのバイト数、ストリーミング対応可否、必要バイト数の計算式など）は
+ * `src/formats.ts` の `rawImageFormatDescriptors`（`Record<RawImageFormat, ...>`）に
+ * 集約されており、この型に追加・削除すると同ファイルがコンパイルエラーで
+ * 追従を強制します。新しいフォーマットを追加する場合は、この union と
+ * `src/formats.ts` の記述子テーブルの両方を更新してください
+ * （詳細は AGENTS.md・docs/detailed-design.md を参照）。
+ */
+export type RawImageFormat =
+  | 'gray8'
+  | 'gray16le'
+  | 'gray16be'
+  | 'rgb24'
+  | 'bgr24'
+  | 'rgba32'
+  | 'bgra32'
+  | 'yuv420p'
+  | 'nv12'
+  | 'yuyv422'
+  | 'float32'
+  | 'depth16';
+
+/**
+ * ストリーミングデコード対応フォーマットの型。
+ * `src/formats.ts` で `streamable: true` を持つフォーマットの集合と一致する
+ * （一致は extension.test.ts のテストで検証される）。
+ */
+export type StreamDecodableRawImageFormat =
+  | 'gray8'
+  | 'gray16le'
+  | 'gray16be'
+  | 'rgb24'
+  | 'bgr24'
+  | 'rgba32'
+  | 'bgra32';
+
+/**
+ * グレースケール系フォーマットの型。
+ * `src/formats.ts` で `grayscaleStream: true` を持つフォーマットの集合と一致する
+ * （一致は extension.test.ts のテストで検証される）。
+ */
+export type GrayscaleStreamFormat = 'gray8' | 'gray16le' | 'gray16be' | 'depth16';
+
+// =============================================================================
+// サポートするピクセルフォーマット（src/formats.ts の記述子テーブルから導出）
+// =============================================================================
+
+/**
+ * 拡張機能が対応するすべてのピクセルフォーマット。
+ * `src/formats.ts` の記述子テーブルの定義順から導出される（手書きの配列ではない）。
+ */
+export const supportedFormats: readonly RawImageFormat[] = rawImageFormatDescriptorList.map(
+  (descriptor) => descriptor.name
+);
 
 /**
  * ストリーミング（少しずつ）デコードに対応するフォーマット。
  * これらは大きなファイルでもメモリ効率よく処理できます。
- * `as const` は配列の中身を変更不可にし、型を正確に推論させます。
+ * `src/formats.ts` の `streamable` フラグから導出される。
  */
-export const streamDecodableFormats = [
-  'gray8',
-  'gray16le',
-  'gray16be',
-  'rgb24',
-  'bgr24',
-  'rgba32',
-  'bgra32',
-] as const;
-
-/** 拡張機能が対応するすべてのピクセルフォーマット */
-export const supportedFormats = [
-  ...streamDecodableFormats,
-  'yuv420p',
-  'nv12',
-  'yuyv422',
-  'float32',
-  'depth16',
-] as const;
+export const streamDecodableFormats: readonly StreamDecodableRawImageFormat[] =
+  streamableFormatNames;
 
 /**
  * グレースケールとして扱うフォーマット。
  * これらはデコード後にウィンドウ/レベル（明暗範囲）の調整ができます。
+ * `src/formats.ts` の `grayscaleStream` フラグから導出される。
  */
-export const grayscaleStreamFormats = ['gray8', 'gray16le', 'gray16be', 'depth16'] as const;
-
-// =============================================================================
-// 型エイリアス（既存の型に別名をつける）
-// =============================================================================
-
-/**
- * ストリーミングデコード対応フォーマットの型。
- * `(typeof 配列)[number]` は「配列の要素のどれか」を意味します。
- */
-export type StreamDecodableRawImageFormat = (typeof streamDecodableFormats)[number];
-
-/** すべての対応フォーマットの型 */
-export type RawImageFormat = (typeof supportedFormats)[number];
-
-/** グレースケール系フォーミットの型 */
-export type GrayscaleStreamFormat = (typeof grayscaleStreamFormats)[number];
+export const grayscaleStreamFormats: readonly GrayscaleStreamFormat[] = grayscaleStreamFormatNames;
 
 /**
  * 設定がどこから取得されたかを表す文字列。
