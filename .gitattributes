@@ -1,0 +1,18 @@
+# Auto-detect text files and normalize line endings to LF in the repository.
+* text=auto eol=lf
+
+# test-data/**/.rawimagerc is regenerated verbatim (LF-only) by
+# test-data/generate_images.py; pin the checkout line ending to LF so running
+# the generator never produces a spurious line-ending diff.
+test-data/**/.rawimagerc text eol=lf
+
+# Generated/binary sample data must never be line-ending-converted.
+test-data/**/*.raw binary
+test-data/**/*.gray binary
+test-data/**/*.bin binary
+test-data/**/*.data binary
+test-data/**/*.img binary
+test-data/**/*.yuv binary
+
+*.png binary
+*.vsix binary
