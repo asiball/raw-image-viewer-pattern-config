@@ -12,8 +12,14 @@
 
 ### 2.1 ファイル関連付け
 
-- 対象拡張子: `.raw`, `.bin`, `.data`, `.img`, `.gray`, `.yuv`
-- エクスプローラーのコンテキストメニュー Open as Raw Image で任意ファイルを表示可能
+raw 画像であることが拡張子から強く推測できるかどうかで、自動オープンの範囲を分けている。`contributes.customEditors` に viewType の異なる 2 エントリを登録し、`RawImageEditorProvider.register()` が同一の Provider インスタンスをそれぞれの viewType で登録する（`vscode.window.registerCustomEditorProvider` を 2 回呼ぶ）。
+
+| viewType                           | 対象拡張子              | priority  | 動作                                                                                                                                                                                                         |
+| ---------------------------------- | ----------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `rawviewer.rawImageEditor`         | `.raw`, `.gray`, `.yuv` | `default` | 対象拡張子のファイルを開くと自動的にこのビューアが起動する                                                                                                                                                   |
+| `rawviewer.rawImageEditorOptional` | `.bin`, `.data`, `.img` | `option`  | ファームウェア・ディスクイメージなど raw 画像とは限らない汎用バイナリ拡張子のため自動オープンしない。「Open as Raw Image」コマンド、またはエディタタイトルバーの「Open With...」からこのビューアを選んで開く |
+
+`rawviewer.openAsRawImage` コマンド（エクスプローラーのコンテキストメニュー/エディタタイトルバー）は、拡張子によらず常に `RawImageEditorProvider.viewType`（`rawviewer.rawImageEditor`、default 側の viewType）を指定して `vscode.openWith` を実行する。両 viewType とも `resolveCustomEditor` 以下の実装（設定解決・Webview 生成・デコード）は完全に共通であり、priority と selector の対象拡張子のみが異なる。
 
 ### 2.2 設定解決優先順位
 
