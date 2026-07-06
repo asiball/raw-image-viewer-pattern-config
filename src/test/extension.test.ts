@@ -450,7 +450,7 @@ suite('Extension Test Suite', () => {
     assert.strictEqual(pixels[0], 128);
   });
 
-  test('createInitialRenderHandshake clears both timers after ready', () => {
+  test('createInitialRenderHandshake sends render exactly once when ready is received', () => {
     type ScheduledTimeout = {
       callback: () => void;
       delay: number;
@@ -483,17 +483,98 @@ suite('Extension Test Suite', () => {
       cancelTimeout
     );
 
+    // フォールバック送信は撤去されているため、スケジュールされるタイマーは
+    // 5秒の ready 未受信警告タイマーのみになる
+    assert.deepStrictEqual(
+      scheduled.map((timeout) => timeout.delay),
+      [5000]
+    );
+
     assert.strictEqual(handshake.handleMessage('ready'), true);
     assert.strictEqual(sendCount, 1);
     assert.strictEqual(warningCount, 0);
-    assert.deepStrictEqual(
-      scheduled.map((timeout) => timeout.delay),
-      [300, 5000]
-    );
     assert.ok(scheduled.every((timeout) => timeout.cleared));
   });
 
-  test('createInitialRenderHandshake dispose clears timers without sending', () => {
+  test('createInitialRenderHandshake warns if ready is never received within 5s', () => {
+    type ScheduledTimeout = {
+      callback: () => void;
+      delay: number;
+      cleared: boolean;
+    };
+
+    const scheduled: ScheduledTimeout[] = [];
+    const scheduleTimeout = (
+      callback: () => void,
+      delay: number
+    ): ReturnType<typeof setTimeout> => {
+      const handle: ScheduledTimeout = { callback, delay, cleared: false };
+      scheduled.push(handle);
+      return handle as unknown as ReturnType<typeof setTimeout>;
+    };
+    const cancelTimeout = (handle: ReturnType<typeof setTimeout>): void => {
+      (handle as unknown as ScheduledTimeout).cleared = true;
+    };
+    let sendCount = 0;
+    let warningCount = 0;
+
+    createInitialRenderHandshake(
+      () => {
+        sendCount += 1;
+      },
+      () => {
+        warningCount += 1;
+      },
+      scheduleTimeout,
+      cancelTimeout
+    );
+
+    assert.strictEqual(scheduled.length, 1);
+    assert.strictEqual(scheduled[0].delay, 5000);
+
+    // 'ready' が一度も届かないまま5秒タイマーが発火したケースをシミュレートする
+    scheduled[0].callback();
+
+    assert.strictEqual(warningCount, 1);
+    assert.strictEqual(sendCount, 0);
+  });
+
+  test('createInitialRenderHandshake sends render only once for duplicate ready messages', () => {
+    const scheduleTimeout = (): ReturnType<typeof setTimeout> =>
+      1 as unknown as ReturnType<typeof setTimeout>;
+    const cancelTimeout = (): void => {
+      /* no-op */
+    };
+
+    // sendInitialRenderPayload 自体が「送信済みなら無視する」ガードを持つケースを
+    // 模して、'ready' の重複受信でも render が1回しか送られないことを検証する
+    // （実装では extension.ts 側の initialPayloadSent フラグがこの役割を担う）。
+    let payloadSent = false;
+    let sendCount = 0;
+    let warningCount = 0;
+
+    const handshake = createInitialRenderHandshake(
+      () => {
+        if (payloadSent) {
+          return;
+        }
+        payloadSent = true;
+        sendCount += 1;
+      },
+      () => {
+        warningCount += 1;
+      },
+      scheduleTimeout,
+      cancelTimeout
+    );
+
+    assert.strictEqual(handshake.handleMessage('ready'), true);
+    assert.strictEqual(handshake.handleMessage('ready'), true);
+    assert.strictEqual(sendCount, 1);
+    assert.strictEqual(warningCount, 0);
+  });
+
+  test('createInitialRenderHandshake dispose clears the warning timer without sending', () => {
     type ScheduledTimeout = {
       cleared: boolean;
     };
@@ -525,7 +606,7 @@ suite('Extension Test Suite', () => {
 
     assert.strictEqual(sendCount, 0);
     assert.strictEqual(warningCount, 0);
-    assert.strictEqual(scheduled.length, 2);
+    assert.strictEqual(scheduled.length, 1);
     assert.ok(scheduled.every((timeout) => timeout.cleared));
   });
 

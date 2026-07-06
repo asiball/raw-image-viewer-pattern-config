@@ -237,7 +237,7 @@ class RawImageEditorProvider implements vscode.CustomReadonlyEditorProvider<RawI
     };
 
     // Webview からの 'ready' メッセージを待つハンドシェイクを開始する
-    // 300ms 以内に ready が届かなくても強制送信する（フォールバック）
+    // 'ready' を受信した時点でのみ初回 render を送る（フォールバック送信はしない）
     const initialRenderHandshake = createInitialRenderHandshake(sendInitialRenderPayload, () => {
       void vscode.window.showWarningMessage(
         'Raw Image Viewer: webview did not send a ready message. Open "Developer: Open Webview Developer Tools" and check console errors.'
@@ -359,10 +359,11 @@ export function parseWebviewMessage(value: unknown): WebviewToExtensionMessage |
 /**
  * Webview の起動ハンドシェイクを管理します。
  *
- * Webview は起動直後に 'ready' メッセージを送ってきます。
- * Extension は 'ready' を受け取ったら即座に 'render' を送り返します。
- * ただし、起動タイミングのずれで 'ready' が届かない場合に備えて
- * 300ms 後に強制送信するタイマーも持ちます。
+ * Webview は起動直後に 'ready' メッセージを送ってきます（Extension が
+ * 'render'/'error' を送るまで 250ms 間隔で再送を続けます）。
+ * Extension は 'ready' を受け取った時点でのみ 'render' を送り返します。
+ * フォールバックによる強制送信は行いません — 'ready' が届かない場合は
+ * 5秒後に警告を表示するタイマーが最終的なセーフティネットになります。
  *
  * @param sendInitialRenderPayload 初回レンダリングを送る関数
  * @param showReadyWarning         5秒経っても ready が届かない場合の警告関数
@@ -375,11 +376,6 @@ export function createInitialRenderHandshake(
   scheduleTimeout: TimeoutScheduler = setTimeout,
   cancelTimeout: TimeoutCanceler = clearTimeout
 ): InitialRenderHandshake {
-  // 300ms 後に強制的に render を送るフォールバックタイマー
-  const initialSendTimer = scheduleTimeout(() => {
-    sendInitialRenderPayload();
-  }, 300);
-
   // 5秒経っても ready が届かなかった場合に警告を出すタイマー
   const readyWarningTimer = scheduleTimeout(() => {
     showReadyWarning();
@@ -391,15 +387,15 @@ export function createInitialRenderHandshake(
         return false; // 'ready' 以外のメッセージは処理しない
       }
 
-      // 'ready' を受け取ったので両方のタイマーをキャンセルして即座に render を送る
-      cancelTimeout(initialSendTimer);
+      // 'ready' を受け取ったので警告タイマーをキャンセルして render を送る
+      // （sendInitialRenderPayload 側で二重送信は防がれるため、'ready' の
+      // 重複受信があっても render は1回しか送られない）
       cancelTimeout(readyWarningTimer);
       sendInitialRenderPayload();
       return true;
     },
     dispose(): void {
       // パネルが閉じられたときに未発火のタイマーをキャンセルする
-      cancelTimeout(initialSendTimer);
       cancelTimeout(readyWarningTimer);
     },
   };

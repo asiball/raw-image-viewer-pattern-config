@@ -33,10 +33,10 @@ npm test             # フルスイート: compile + lint + vscode-test（Electr
 
 **メッセージプロトコル（Extension ↔ Webview）:**
 
-- Webview → Extension: `{ type: 'ready' }`（acknowledgement を受け取るまでインターバルで送信）
+- Webview → Extension: `{ type: 'ready' }`（`render`/`error` を受信するまで 250 ms 間隔で再送）
 - Extension → Webview: `{ type: 'render', config, fileUri, fileSize }` または `{ type: 'error', message }`
 
-**起動タイミング:** Extension は 300 ms のフォールバックタイマーを設定し、`ready` ハンドシェイクが届かなくても `render` を送信する。また、5 秒間 `ready` を受信しなかった場合に警告を表示するタイマーも設定している。
+**起動タイミング:** Webview は起動直後に `ready` を送信し、`render`/`error` を受信するまで 250 ms 間隔で再送し続ける。Extension は `ready` を受信した時点でのみ初回 `render` を送信する（フォールバック送信は行わない）。Webview 側は 4 秒以内に `render`/`error` を受信しなければタイムアウトエラーを表示し、Extension 側は 5 秒間 `ready` を受信しなかった場合に警告を表示するタイマーを設定している。
 
 ## 仕様駆動ワークフロー
 
