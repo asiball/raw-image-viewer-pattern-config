@@ -1013,6 +1013,47 @@ suite('Extension Test Suite', () => {
     assert.deepStrictEqual(enumValues, [...supportedFormats]);
   });
 
+  test('package.json customEditors splits selectors by priority: raw-only extensions default, generic binary extensions option', () => {
+    // .bin/.data/.img はファームウェアやディスクイメージなど raw 画像とは限らない
+    // 汎用バイナリ拡張子であるため、インストールしただけで自動的にビューアが
+    // 乗っ取らないよう priority: "option" で登録し、.raw/.gray/.yuv のみ
+    // priority: "default"（自動オープン）を維持する設計になっている。
+    const packageJsonPath = path.join(__dirname, '..', '..', 'package.json');
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
+      contributes: {
+        customEditors: Array<{
+          viewType: string;
+          selector: Array<{ filenamePattern: string }>;
+          priority: string;
+        }>;
+      };
+    };
+
+    const customEditors = packageJson.contributes.customEditors;
+    assert.strictEqual(customEditors.length, 2, 'expected exactly 2 customEditors entries');
+
+    const byViewType = new Map(customEditors.map((entry) => [entry.viewType, entry]));
+
+    const defaultEditor = byViewType.get('rawviewer.rawImageEditor');
+    assert.ok(defaultEditor, 'rawviewer.rawImageEditor entry must exist');
+    assert.strictEqual(defaultEditor.priority, 'default');
+    assert.deepStrictEqual(
+      defaultEditor.selector.map((s) => s.filenamePattern),
+      ['*.raw', '*.gray', '*.yuv']
+    );
+
+    const optionalEditor = byViewType.get('rawviewer.rawImageEditorOptional');
+    assert.ok(optionalEditor, 'rawviewer.rawImageEditorOptional entry must exist');
+    assert.strictEqual(optionalEditor.priority, 'option');
+    assert.deepStrictEqual(
+      optionalEditor.selector.map((s) => s.filenamePattern),
+      ['*.bin', '*.data', '*.img']
+    );
+
+    // 2 エントリを合わせても viewType は重複しない
+    assert.strictEqual(byViewType.size, 2);
+  });
+
   test('findConfigPath discovers .rawimagerc from nested paths and loadRawImageConfig loads it', () => {
     const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'rawviewer-config-test-'));
     try {

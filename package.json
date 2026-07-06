@@ -27,15 +27,6 @@
             "filenamePattern": "*.raw"
           },
           {
-            "filenamePattern": "*.bin"
-          },
-          {
-            "filenamePattern": "*.data"
-          },
-          {
-            "filenamePattern": "*.img"
-          },
-          {
             "filenamePattern": "*.gray"
           },
           {
@@ -43,6 +34,22 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "rawviewer.rawImageEditorOptional",
+        "displayName": "Raw Image Viewer: Pattern-based configuration",
+        "selector": [
+          {
+            "filenamePattern": "*.bin"
+          },
+          {
+            "filenamePattern": "*.data"
+          },
+          {
+            "filenamePattern": "*.img"
+          }
+        ],
+        "priority": "option"
       }
     ],
     "commands": [

@@ -18,6 +18,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
   { "patterns": [{ "match": "*", "width": 1920, "height": 1080, "format": "rgb24" }] }
   ```
 
+- **`.bin`, `.data`, and `.img` files are no longer opened automatically just by installing the extension.** These are generic binary-file extensions that are not necessarily raw images (firmware dumps, disk images, arbitrary data blobs), and hijacking their default double-click behavior was a common source of low Marketplace ratings. They are now registered under a separate `rawviewer.rawImageEditorOptional` custom editor with `priority: "option"` instead of `"default"`. `.raw`, `.gray`, and `.yuv` are unaffected and keep opening automatically (`priority: "default"`). To view a `.bin`/`.data`/`.img` file with this extension, use the explorer context menu's **Open as Raw Image** command, or reopen the file via the editor title bar's **Open With...** and pick "Raw Image Viewer: Pattern-based configuration".
+
 ### Added
 
 - **Colormap selector** for grayscale-family formats (`gray8`, `gray16le`, `gray16be`, `depth16`, `float32`) — choose between Grayscale (default), Jet, Viridis, and Hot, applied after window/level normalization

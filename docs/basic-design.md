@@ -12,8 +12,9 @@
 
 現行実装で提供する主要機能は以下。
 
-- 対象拡張子の自動オープン（`.raw`, `.bin`, `.data`, `.img`, `.gray`, `.yuv`）
-- 任意ファイルを Open as Raw Image で手動オープン
+- raw 画像専用拡張子（`.raw`, `.gray`, `.yuv`）の自動オープン（`customEditors` priority: `default`）
+- 汎用バイナリ拡張子（`.bin`, `.data`, `.img`）はビューア対象だが自動オープンしない（priority: `option`）。ファームウェアやディスクイメージなど raw 画像とは限らないファイルを誤って乗っ取らないための区別
+- 任意ファイルを Open as Raw Image で手動オープン（`.bin` / `.data` / `.img` を開く標準的な方法。エディタの Open With... からの再オープンでも可）
 - `.rawimagerc` / ファイル名推論 / ワークスペース設定によるレンダリング条件解決
 - Webview + Canvas による画像表示
 - PNG エクスポート
