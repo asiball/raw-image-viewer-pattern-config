@@ -34,7 +34,7 @@ npm test             # フルスイート: compile + lint + vscode-test（Electr
 **メッセージプロトコル（Extension ↔ Webview）:**
 
 - Webview → Extension: `{ type: 'ready' }`（`render`/`error` を受信するまで 250 ms 間隔で再送）
-- Extension → Webview: `{ type: 'render', config, fileUri, fileSize }` または `{ type: 'error', message }`
+- Extension → Webview: `{ type: 'render', config, configSource, fileUri, fileSize }` または `{ type: 'error', message }`
 
 **起動タイミング:** Webview は起動直後に `ready` を送信し、`render`/`error` を受信するまで 250 ms 間隔で再送し続ける。Extension は `ready` を受信した時点でのみ初回 `render` を送信する（フォールバック送信は行わない）。Webview 側は 4 秒以内に `render`/`error` を受信しなければタイムアウトエラーを表示し、Extension 側は 5 秒間 `ready` を受信しなかった場合に警告を表示するタイマーを設定している。
 
@@ -81,14 +81,14 @@ gh pr view <number>             # PR の詳細確認
 
 PR タイトルプレフィックス: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`
 
-`main` への直接プッシュは禁止。CI はすべての PR とプッシュに対して `npm run lint`、`npm run compile`、`npm run format:check`、`xvfb-run -a npm test`（vscode-test。ヘッドレス Linux では xvfb 必須）を実行する。
+`main` への直接プッシュは禁止。CI（`build-vsix.yml`）はすべての PR と `main` への push に対して、リリースメタデータ検証（`node scripts/validate-release-version.mjs`）、`npm run format:check`、`npm run lint`、`npm run compile`、`xvfb-run -a npm test`（vscode-test。ヘッドレス Linux では xvfb 必須）を実行する。
 
 **コードを変更する場合は、変更を加える前にローカルブランチを作成すること。** 上記のブランチプレフィックスを使用し、AI エージェントの作業には `copilot/` を使用する。
 
 **ブランチをプッシュする前に必ず CI が通ることをローカルで確認すること。**
 
 ```bash
-npm run lint && npm run compile && npm run format:check
+npm run validate:release && npm run format:check && npm run lint && npm run compile
 ```
 
 フォーマット違反がある場合は `npm run format` で修正してからコミット・プッシュすること。CI が失敗した状態でブランチをプッシュしない。
